@@ -1,0 +1,4 @@
+inline void parity(int *inport, int *outport)
+{
+    __asm("parity %0, %1 \n" : "=d"(*outport) : "d"(*inport));
+}

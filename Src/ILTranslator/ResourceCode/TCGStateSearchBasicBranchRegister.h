@@ -1,0 +1,56 @@
+#pragma once
+
+#include <map>
+#include <string>
+#include <vector>
+
+
+using namespace std;
+
+/**
+ * @class StateSearchBasicBranchRegister
+ * @brief 状态搜索基础分支注册器类
+ * 
+ * 该类用于管理状态搜索过程中的分支信息，包括分支的层次结构、
+ * 父子关系、兄弟关系等。所有成员都是静态的，便于全局访问。
+ */
+class StateSearchBasicBranchRegister{
+public:
+    /**
+     * @brief 分支标识符到分支名称的映射
+     * 键：分支ID，值：分支名称字符串
+     */
+    static map<int, string> StateSearch_Branch;
+    
+    /**
+     * @brief 分支标识符到分支深度的映射
+     * 键：分支ID，值：该分支在搜索树中的深度级别
+     */
+    static map<int, int> StateSearch_Branch_Depth;
+    
+    /**
+     * @brief 分支标识符到父分支的映射
+     * 键：分支ID，值：该分支的父分支ID
+     */
+    static map<int, int> StateSearch_Branch_Parent;
+    
+    /**
+     * @brief 分支标识符到兄弟分支的映射
+     * 键：分支ID，值：该分支的兄弟分支ID
+     */
+    static map<int, int> StateSearch_Branch_Brother;
+    
+    /**
+     * @brief 分支标识符到子分支列表的映射
+     * 键：分支ID，值：该分支的所有子分支ID列表
+     */
+    static map<int, vector<int>> StateSearch_Branch_Children;
+    
+    /**
+     * @brief 加载状态搜索分支数据
+     * 
+     * 该函数负责初始化和加载所有的分支数据，包括分支关系、
+     * 深度信息等，为状态搜索算法提供必要的数据支持。
+     */
+    static void loadStateSearchBranchData();
+};

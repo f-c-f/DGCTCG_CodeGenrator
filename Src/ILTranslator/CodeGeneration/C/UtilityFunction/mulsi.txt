@@ -1,0 +1,4 @@
+inline void muls_i(int *inport1, int *inport2, int *outport)
+{
+    __asm("muls %0, %1, %2 \n" : "=d"(*outport) : "d"(*inport1), "d"(*inport2));
+}

@@ -1,0 +1,4 @@
+inline void csub_i(int *condition, int *inport1, int *inport2, int *outport)
+{
+    __asm("csub %0, %1, %2 \n" : "=d"(*outport) : "d"(*condition), "d"(*inport1), "d"(*inport2));
+}

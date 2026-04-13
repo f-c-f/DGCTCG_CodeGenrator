@@ -1,0 +1,16 @@
+#include <stdio.h>
+#include <stdlib.h>
+void binaryFileAppend_f32(const char* filename, float* data, int size) {
+    FILE* file = fopen(filename, "ab");
+    if (file == NULL) {
+        fprintf(stderr, "Error opening file %s for appending.\n", filename);
+        exit(1);
+    }
+    size_t itemsWritten = fwrite(data, sizeof(float) * size, 1, file);
+    if (itemsWritten != 1) {
+        fprintf(stderr, "Error appending to file %s.\n", filename);
+        fclose(file);
+        exit(1);
+    }
+    fclose(file);
+}

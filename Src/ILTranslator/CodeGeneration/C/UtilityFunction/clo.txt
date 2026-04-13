@@ -1,0 +1,4 @@
+inline void clo(int *inport, int *outport)
+{
+    __asm("clo %0, %1 \n" : "=d"(*outport) : "d"(*inport));
+}

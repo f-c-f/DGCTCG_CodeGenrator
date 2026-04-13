@@ -1,0 +1,4 @@
+inline void abss_i(int *inport, int *outport)
+{
+    __asm("abss %0, %1 \n" : "=d"(*outport) : "d"(*inport));
+}

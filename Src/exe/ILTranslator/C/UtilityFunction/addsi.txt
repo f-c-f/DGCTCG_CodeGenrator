@@ -1,0 +1,4 @@
+inline void adds_i(int *inport1, int *inport2, int *outport)
+{
+    __asm("adds %0, %1, %2 \n" : "=d"(*outport) : "d"(*inport1), "d"(*inport2));
+}

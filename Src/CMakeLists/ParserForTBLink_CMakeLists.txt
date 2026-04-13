@@ -1,0 +1,36 @@
+cmake_minimum_required (VERSION 3.21)
+
+
+# 设置编译器标�?if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -g -O0")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -g -O0 -std=c++17")
+else()
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -O2")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -O2 -std=c++17")
+endif()
+
+project ("ParserForTBLink")
+
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ../exe/ParserForTBLink)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ../exe/ParserForTBLink)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ../exe/ParserForTBLink)
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ParserForTBLink)
+
+
+file(GLOB SOURCE_Common ../Src/Common/*.cpp ../Src/Common/*.h ../Src/Common/*.hpp)
+file(GLOB SOURCE_ILBasic ../Src/ILBasic/*.cpp ../Src/ILBasic/*.h)
+file(GLOB SOURCE_MIRBasic ../Src/MIRBasic/*.cpp ../Src/MIRBasic/*.h)
+file(GLOB SOURCE_ParserForTBLink ../Src/ParserForTBLink/*.cpp ../Src/ParserForTBLink/*.h)
+
+add_executable (ParserForTBLink 
+	${SOURCE_Common}
+	${SOURCE_ILBasic}
+	${SOURCE_MIRBasic}
+	${SOURCE_ParserForTBLink}
+)
+
+source_group("Common" FILES ${SOURCE_Common})
+source_group("ILBasic" FILES ${SOURCE_ILBasic})
+source_group("MIRBasic" FILES ${SOURCE_MIRBasic})
+source_group("ParserForTBLink" FILES ${SOURCE_ParserForTBLink})

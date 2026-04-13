@@ -1,0 +1,1988 @@
+#include "TCGHybridBasic.h"
+#include "BitmapCov.h"
+#include "tinyxml2.h"
+#include "Utility.h"
+#include <string>
+#include <time.h>
+#include <string.h>
+#include <algorithm>
+#include <queue>
+#include <random>
+#include <unordered_map>
+#include <cstdio>
+#include "ArgumentParser.h"
+#include "BasicExcel.hpp"
+#include "TCGHybridBasicBranchRegister.h"
+#include "TCGHybridBasicDistanceRegister.h"
+#define WIN32_LEAN_AND_MEAN
+#define NOCRYPT    // 防止 windows.h 中定义 byte（常用做宏）
+#include <Windows.h>
+#include "TCGHybridBasicGlobalVariableRegister.h"
+#include "TCGHybridBasicParameterRegister.h"
+#include "TCGHybridBasicInputRegister.h"
+using namespace YExcel;
+using namespace std;
+
+static string fileTimeToLocalLogString(const FILETIME& ft)
+{
+    if (ft.dwLowDateTime == 0 && ft.dwHighDateTime == 0)
+        return "N/A";
+    FILETIME lft;
+    if (!FileTimeToLocalFileTime(&ft, &lft))
+        return "?";
+    SYSTEMTIME st;
+    if (!FileTimeToSystemTime(&lft, &st))
+        return "?";
+    char buf[80];
+    snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u:%02u",
+        (unsigned)st.wYear, (unsigned)st.wMonth, (unsigned)st.wDay,
+        (unsigned)st.wHour, (unsigned)st.wMinute, (unsigned)st.wSecond);
+    return string(buf);
+}
+
+/** 将源文件三个 FILETIME（本地格式化）写入 log，每个输出路径一行（outPath2 可空） */
+static void logMinimizeNumberedBinInheritedTimes(const string& exePath,
+    const string& srcPath, const string& outPath1, const string& outPath2 = string())
+{
+    HANDLE hSrc = CreateFileA(srcPath.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    auto logOne = [&](const string& outP, const string& extra) {
+        appendFile(exePath + "/log.txt", "[Minimize] out=\"" + outP + "\" " + extra + "\n");
+    };
+    if (hSrc == INVALID_HANDLE_VALUE) {
+        logOne(outPath1, "src=\"" + srcPath + "\" inheritedTime_read_failed");
+        if (!outPath2.empty())
+            logOne(outPath2, "src=\"" + srcPath + "\" inheritedTime_read_failed");
+        return;
+    }
+    FILETIME ftCreate{}, ftAccess{}, ftWrite{};
+    BOOL gt = GetFileTime(hSrc, &ftCreate, &ftAccess, &ftWrite);
+    CloseHandle(hSrc);
+    if (!gt) {
+        logOne(outPath1, "src=\"" + srcPath + "\" GetFileTime_failed");
+        if (!outPath2.empty())
+            logOne(outPath2, "src=\"" + srcPath + "\" GetFileTime_failed");
+        return;
+    }
+    string part = string("src=\"") + srcPath + "\" srcCreate_local=" + fileTimeToLocalLogString(ftCreate)
+        + " srcWrite_local=" + fileTimeToLocalLogString(ftWrite)
+        + " srcAccess_local=" + fileTimeToLocalLogString(ftAccess);
+    logOne(outPath1, part);
+    if (!outPath2.empty())
+        logOne(outPath2, part);
+}
+
+/** 将已存在文件 dest 的时间戳设为与 src 一致（新覆盖转存的 000000000n.bin 继承 Fuzz/In 中原文件的生成/修改时间） */
+static bool copyFileTimesOntoExistingFile(const string& destPath, const string& srcPath)
+{
+    HANDLE hSrc = CreateFileA(srcPath.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hSrc == INVALID_HANDLE_VALUE)
+        return false;
+    FILETIME ftCreate{}, ftAccess{}, ftWrite{};
+    BOOL gt = GetFileTime(hSrc, &ftCreate, &ftAccess, &ftWrite);
+    CloseHandle(hSrc);
+    if (!gt)
+        return false;
+
+    HANDLE hDst = CreateFileA(destPath.c_str(), FILE_WRITE_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hDst == INVALID_HANDLE_VALUE)
+        return false;
+    BOOL st = SetFileTime(hDst, &ftCreate, &ftAccess, &ftWrite);
+    CloseHandle(hDst);
+    return st != FALSE;
+}
+
+string TCGHybrid::exePath;
+
+void* TCGHybrid::fuzzerProcessHandle = nullptr;
+void* TCGHybrid::hstcgProcessHandle = nullptr;
+void* TCGHybrid::paraFuzzerProcessHandle = nullptr;
+
+vector<TCGHybrid::GlobalVariableData> TCGHybrid::globalVariableList;
+vector<TCGHybrid::InputVariableData> TCGHybrid::inputList;
+int TCGHybrid::inputsDataLengthTotal = 0;
+vector<TCGHybrid::ParameterVariableData> TCGHybrid::modelParameterList;
+int TCGHybrid::parametersDataLengthTotal;
+long long TCGHybrid::startTime;
+
+string TCGHybrid::paraBinaryTestCaseFilePath;
+int TCGHybrid::paraMaxRunTime;
+bool TCGHybrid::paraEnableFuzzer;
+bool TCGHybrid::paraEnableHSTCG;
+bool TCGHybrid::paraEnableHSTCGDistanceGuided;
+bool TCGHybrid::paraEnableSTCG;
+bool TCGHybrid::paraEnableParaFuzzer;
+int TCGHybrid::paraSleepTime;
+
+bool TCGHybrid::finish = false;
+
+unordered_map<int64_t, bool> TCGHybrid::fileHashReadList;
+
+// 记录每个测试用例哈希值与其对应的 BitmapCovRecord 指针，用于避免重复执行相同测试用例
+map<int64_t, BitmapCov::BitmapCovRecord*> TCGHybrid::testCaseBinaryCovRecordMap;
+
+TCGHybrid::CoverageInfo TCGHybrid::coverageInfo = {};
+int TCGHybrid::coverageInfoRepeatCount = 0;
+map<int, TCGHybrid::BranchDistanceData> TCGHybrid::branchDistanceDataMap; // key: distanceId  value: BranchDistanceData
+
+map<int, TCGHybrid::ArrayDistanceData> TCGHybrid::arrayDistanceDataMap; // key: distanceId  value: ArrayDistanceData
+map<string, double> TCGHybrid::distanceRecordValueV1; // 记录当前Step各距离值（原始值）
+map<string, double> TCGHybrid::distanceRecordValueV2; // 记录当前Step各距离值（处理后值）
+map<string, int> TCGHybrid::distanceRecordV1Array; // 记录当前Step各数组距离值（原始值）
+map<string, int> TCGHybrid::distanceRecordV2Array; // 记录当前Step各数组距离值（处理后值）
+/**
+ * @brief 初始化 TCGHybrid 框架
+ *
+ * 解析命令行参数，设置各组件开关及路径，创建必要目录，并完成分支数据加载。
+ *
+ * @param argc 命令行参数个数
+ * @param argv 命令行参数列表
+ *
+ * @note
+ * - 默认运行时长为 5 天（432000000 ms）<br>
+ * - 默认启用 Fuzzer、HSTCG、STCG；默认关闭 HSTCG 距离引导与 ParaFuzzer<br>
+ * - 会在工作目录下自动创建 TestCaseOutputAll 与 TestCases 文件夹<br>
+ * - 随机种子采用当前时间初始化<br>
+ *
+ * @see ArgumentParser::parseArguments(), TCGHybridBasicBranchRegister::loadTCGHybridBranchData()
+ */
+void TCGHybrid::initTCGHybrid(int argc, char *argv[])
+{
+    exePath = getExeDirPath();
+
+    ArgumentParser argumentParser;
+	paraBinaryTestCaseFilePath = "";
+	paraMaxRunTime = 432000000; //�������5��ʱ��
+    
+
+    string helpString;
+    helpString += "Usage: TCGHybridBasic.exe [options]\n";
+    helpString += "Options:\n";
+    helpString += "  -tb <path> : Binary Test Case File Path\n";
+    helpString += "  -t <time> : Max Run Time\n";
+    helpString += "  -fuzzer <true/false> : Enable Fuzzer, default is true\n";
+    helpString += "  -hstcg <true/false> : Enable HSTCG, default is true\n";
+    helpString += "  -hstcgdg  <true/false> : Enable HSTCG distance guided, default is false\n";
+    helpString += "  -stcg <true/false> : Enable STCG, default is true\n";
+    helpString += "  -parafuzzer <true/false> : Enable ParaFuzzer, default is false\n";
+    helpString += "  -sleep <time> : Sleep Time (ms), default is 0\n";
+    argumentParser.setHelpStr(helpString);
+
+    argumentParser.parseArguments(argc, argv);
+
+	paraBinaryTestCaseFilePath = argumentParser.getFlagValue("-tb", paraBinaryTestCaseFilePath);
+	paraMaxRunTime =			 stringToInt(argumentParser.getFlagValue("-t", to_string(paraMaxRunTime)));
+    paraEnableFuzzer = argumentParser.getFlagValue("-fuzzer", "true") == "true";
+    paraEnableHSTCG = argumentParser.getFlagValue("-hstcg", "true") == "true";
+    paraEnableHSTCGDistanceGuided = argumentParser.getFlagValue("-hstcgdg", "false") == "true";
+    paraEnableSTCG = argumentParser.getFlagValue("-stcg", "true") == "true";
+    paraEnableParaFuzzer = argumentParser.getFlagValue("-parafuzzer", "false") == "true";
+    paraSleepTime = stringToInt(argumentParser.getFlagValue("-sleep", "0"));
+
+    cout << argumentParser.flagToString() << endl;
+    
+
+    srand((unsigned)time(nullptr));
+    startTime = clock();
+
+    if(!isFolderExist(exePath + "/TestCaseOutputAll")) {
+        createFolder(exePath + "/TestCaseOutputAll");
+    }
+    if(!isFolderExist(exePath + "/TestCases")) {
+        createFolder(exePath + "/TestCases");
+    }
+
+    TCGHybridBasicBranchRegister::loadTCGHybridBranchData();
+}
+
+/**
+ * @brief 第二阶段初始化：注册全局变量、参数与输入，启动 Fuzzer / HSTCG 并等待其稳定
+ *
+ * 依次完成：
+ * 1. 注册全部全局变量（用于后续 reset）  
+ * 2. 注册全部模型参数（固定长度）  
+ * 3. 注册全部输入变量（动态长度）  
+ * 4. 记录当前覆盖信息作为基准  
+ * 5. 根据开关异步启动 Fuzzer 与 HSTCG 子进程  
+ * 6. 若任一子进程启动，主进程休眠 3 秒，避免 CPU 抢占与日志混乱  
+ *
+ * @note 本函数仅执行一次，由主线程在 initTCGHybrid() 之后调用  
+ * @see TCGHybridBasicGlobalVariableRegister::registAllGlobalVariables()  
+ * @see TCGHybridBasicParameterRegister::registAllParameters()  
+ * @see TCGHybridBasicInputRegister::registAllInputs()  
+ * @see BitmapCov::step(), BitmapCov::recordTotal()  
+ * @see TCGHybrid::callFuzzer(), TCGHybrid::callHSTCG()  
+ */
+void TCGHybrid::initTCGHybrid2()
+{
+    /* 注册全局变量，用于后续 resetGlobalVariables() 快速还原状态 */
+    TCGHybridBasicGlobalVariableRegister::registAllGlobalVariables();
+    /* 注册模型参数，长度固定，用于 minimizeTestCasesBinary() 校验 */
+    TCGHybridBasicParameterRegister::registAllParameters();
+    /* 注册输入变量，长度累加至 inputsDataLengthTotal，用于补齐测试用例 */
+    TCGHybridBasicInputRegister::registAllInputs();
+
+    /* 记录当前覆盖基准，供后续 stepTCGHybrid() 判断是否出现新覆盖 */
+    BitmapCov::step();
+    BitmapCov::recordTotal();
+
+    TCGHybridBasicDistanceRegister::registAllDistance();
+    //cout << "\nDistance Number: " << TCGHybrid::branchDistanceDataMap.size() << endl;
+
+    /* 根据配置异步启动 Fuzzer 子进程 */
+    if (paraEnableFuzzer) {
+        TCGHybrid::callFuzzer();
+    }
+    /* 根据配置异步启动 HSTCG 子进程，可选距离引导 */
+    if (paraEnableHSTCG) {
+        TCGHybrid::callHSTCG();
+    }
+
+    /* 若启动了任一子进程，主进程短暂休眠，避免日志交错与 CPU 抢占 */
+    if(paraEnableFuzzer || paraEnableHSTCG) {
+        cout << "Sleep 3s" << endl;
+        Sleep(3000);
+    }
+}
+
+/**
+ * @brief TCGHybrid 主循环单步驱动函数
+ *
+ * 每调用一次完成以下工作流：
+ * 1. 若全局 finish 标记为 true 或检测到 finish.txt 文件，立即返回 false，通知上层结束循环  
+ * 2. 调用 minimizeTestCasesBinary 对 Fuzz/In 目录下的测试用例进行去重、最小化并执行，得到精简后的测试用例列表  
+ * 3. 若启用 STCG（paraEnableSTCG），则调用 callSTCGForSolve 启动 STCG 求解器，为后续模糊测试提供高质量种子  
+ * 4. 若配置了休眠时间（paraSleepTime > 0），主进程主动休眠，避免 CPU 空转及日志刷屏  
+ * 5. 若启用 ParaFuzzer（paraEnableParaFuzzer），则调用 callParaFuzzer 启动或驱动并行模糊测试子进程  
+ *
+ * @return true  表示本步正常完成，外部应继续调用本函数  
+ * @return false 表示已触发结束条件，外部应终止循环  
+ *
+ * @note  
+ * - 本函数无阻塞逻辑，单次执行时间主要取决于 minimizeTestCasesBinary 的用例数量及 STCG 求解耗时  
+ * - 各子组件（STCG / ParaFuzzer）为异步或脚本调用，不会阻塞主循环  
+ * - 休眠时长以秒为单位打印日志，方便追踪主进程节奏  
+ *
+ * @see minimizeTestCasesBinary(), callSTCGForSolve(), callParaFuzzer()
+ */
+bool TCGHybrid::stepTCGHybrid()
+{
+    /* 若全局完成标记置位或存在 finish.txt，立即返回 false，通知上层结束主循环 */
+    if (TCGHybrid::finish || isFileExist("finish.txt")) {
+        return false;
+    }
+    vector<TCGHybrid::TestCaseBinary> testCasesBinary;
+    /* 对 Fuzz/In 目录下的测试用例进行去重、最小化并执行，返回精简后的用例列表 */
+    bool res = TCGHybrid::minimizeTestCasesBinary(exePath + "/Fuzz/In", testCasesBinary,true);
+    //写一个randomRun
+    randomRun(5000);
+
+    /* 若启用 STCG，则启动 STCG 求解器，为后续模糊测试提供高质量种子 */
+    if (paraEnableSTCG) {
+        TCGHybrid::callSTCGForSolve();
+    }
+
+    /* 若配置了休眠时间，主进程主动休眠，避免 CPU 空转及日志刷屏 */
+    if (paraSleepTime > 0) {
+        cout << "Sleep " << paraSleepTime/1000 << "s" << endl;
+        Sleep(paraSleepTime);
+    }
+
+    /* 若启用 ParaFuzzer，则启动或驱动并行模糊测试子进程 */
+    if (paraEnableParaFuzzer) {
+        TCGHybrid::callParaFuzzer();
+    }
+
+    /* 返回 true，通知上层继续下一次循环 */
+    return true;
+}
+
+namespace {
+    int RandomTestCaseOutPutCount = 0;
+    int testCaseIdBin = 0;
+
+    /** randomRun 每步写入，供 outputTestCasesBinary 写出 RandomRunCase*.bin 时打距离日志 */
+    struct RandomRunCaseDistanceCtx {
+        bool valid = false;
+        int targetBranchDistanceId = -1;
+        int targetArrayDistanceId = -1;
+        bool branchHaveBeforeTry = false;
+        bool branchHaveAfterTry = false;
+        double branchBefore = 0;
+        double branchAfter = 0;
+        bool arrayHaveBeforeTry = false;
+        bool arrayHaveAfterTry = false;
+        int arrayBefore = 0;
+        int arrayAfter = 0;
+    } g_randomRunCaseDistCtx;
+
+    static void logRandomRunCaseDistance(const string& binFilePath)
+    {
+        if (!TCGHybrid::paraEnableHSTCGDistanceGuided || !g_randomRunCaseDistCtx.valid)
+            return;
+        string logStr;
+        if (g_randomRunCaseDistCtx.targetBranchDistanceId != -1) {
+            auto itB = TCGHybrid::branchDistanceDataMap.find(g_randomRunCaseDistCtx.targetBranchDistanceId);
+            if (itB == TCGHybrid::branchDistanceDataMap.end())
+                return;
+            const TCGHybrid::BranchDistanceData& bdd = itB->second;
+            string vStart = "N/A", vEnd = "N/A";
+            if (g_randomRunCaseDistCtx.branchHaveBeforeTry)
+                vStart = to_string(g_randomRunCaseDistCtx.branchBefore);
+            if (g_randomRunCaseDistCtx.branchHaveAfterTry)
+                vEnd = to_string(g_randomRunCaseDistCtx.branchAfter);
+            logStr = "[RandomRunCase] outFile=\"" + binFilePath + "\" BranchDistanceData{ distanceId="
+                + to_string(g_randomRunCaseDistCtx.targetBranchDistanceId)
+                + ", branchId=" + to_string(bdd.branchId) + ", varName=\"" + bdd.varName + "\""
+                + ", distanceOpType='" + string(1, bdd.distanceOpType) + "'"
+                + ", targetValue=" + to_string(bdd.targetValue)
+                + ", maxStepDistance=" + to_string(bdd.maxStepDistance)
+                + ", maxStepInputCount=" + to_string(bdd.maxStepInput.size())
+                + ", var_beforeTry=" + vStart + ", var_afterTry=" + vEnd + " }\n";
+        } else if (g_randomRunCaseDistCtx.targetArrayDistanceId != -1) {
+            auto itA = TCGHybrid::arrayDistanceDataMap.find(g_randomRunCaseDistCtx.targetArrayDistanceId);
+            if (itA == TCGHybrid::arrayDistanceDataMap.end())
+                return;
+            const TCGHybrid::ArrayDistanceData& add = itA->second;
+            string aStart = "N/A", aEnd = "N/A";
+            if (g_randomRunCaseDistCtx.arrayHaveBeforeTry)
+                aStart = to_string(g_randomRunCaseDistCtx.arrayBefore);
+            if (g_randomRunCaseDistCtx.arrayHaveAfterTry)
+                aEnd = to_string(g_randomRunCaseDistCtx.arrayAfter);
+            logStr = "[RandomRunCase] outFile=\"" + binFilePath + "\" ArrayDistanceData{ distanceId="
+                + to_string(g_randomRunCaseDistCtx.targetArrayDistanceId) + ", varName=\"" + add.varName + "\""
+                + ", arrayDataLength=" + to_string(add.arrayDataLength)
+                + ", maxStepDistance=" + to_string(add.maxStepDistance)
+                + ", maxStepInputCount=" + to_string(add.maxStepInput.size())
+                + ", arrayDist_beforeTry=" + aStart + ", arrayDist_afterTry=" + aEnd + " }\n";
+        } else {
+            return;
+        }
+        appendFile(TCGHybrid::exePath + "/log.txt", logStr);
+        std::cout << logStr;
+    }
+}
+
+void TCGHybrid::randomRun(int nTimes)
+{
+    if(!TCGHybrid::paraEnableHSTCGDistanceGuided) {
+        return;
+    }
+    /*
+    从map<int, TCGHybrid::BranchDistanceData> TCGHybrid::branchDistanceDataMap;
+    中随机选择一个BranchDistanceData,maxStepInput数据变异一下
+    */
+    string logStr;
+    logStr = "Random Run " + to_string(nTimes) + " Steps.\n";
+    //std::cout << logStr;
+    appendFile(exePath + "/log.txt", logStr);
+
+    InputVariableStep inputVariablesStepTemp;
+    
+
+    
+    int targetBranchDistanceId = -1;
+    int targetArrayDistanceId = -1;       
+    int pCount = 1;
+    int rand_;
+    
+    //cout<<"branch ";
+        vector<int> unreachedBranchId;
+    for(int i = 0; i < BitmapCov::branchBitmapLength; i++)
+    {
+        if(to_string(BitmapCov::branchAllBitmap[i] - 0)=="0") {
+            //cout<<i<<" ";
+            unreachedBranchId.push_back(i);
+        }  
+    }
+    //cout<< "\nis not covered"<<endl;
+    //cout<<"The number of uncovered branches "<<unreachedBranchId.size()<<"/"<<BitmapCov::branchBitmapLength<<endl;
+    // 在 branchDistanceDataMap 中寻找距离引导的分支，优先选择分支未被覆盖且 maxStepDistance>0 的分支
+        vector<int> targetDistance;
+        for (auto branchDistanceData : branchDistanceDataMap)
+        {
+            BranchDistanceData* bdd = &branchDistanceData.second;
+            
+            if (!BitmapCov::branchAllBitmap[bdd->branchId] && 
+                findIndexInVector(targetDistance, branchDistanceData.first) == -1 &&
+                bdd->maxStepDistance >= 0)
+            {
+                targetDistance.push_back(branchDistanceData.first);
+                cout << "Uncovered branchId: " << bdd->branchId 
+                     << ", varName: " << bdd->varName 
+                     << ", maxStepDistance: " << bdd->maxStepDistance << endl;
+            }
+            if (targetDistance.size() > 0)
+            {
+                //cout<<"targetDistance.size() "<<targetDistance.size()<<endl;
+            }
+        // 输出所有分支未被覆盖且 maxStepDistance>0 的分支
+     
+        }
+        if (targetDistance.size() > 0)
+        {
+            pCount++;
+            rand_ = rand() % targetDistance.size();
+            targetBranchDistanceId = targetDistance[rand_];
+        }
+        if (!arrayDistanceDataMap.empty())
+        {
+            pCount++;
+            rand_ = rand() % arrayDistanceDataMap.size();
+            targetArrayDistanceId = rand_;
+        }
+
+        if (pCount == 3)
+        {
+            //如果Distance和ArrayDistance都有，二者中随机选一个
+            rand_ = rand() % pCount; // 0表示分支距离引导，1表示数组距离引导    
+            if (rand_ == 0) {
+                targetBranchDistanceId = -1;
+               targetArrayDistanceId = -1;
+            }
+            else if (rand_ == 1) {
+                targetArrayDistanceId = -1;
+            }
+            else if (rand_ == 2) {
+                targetBranchDistanceId = -1;
+            }
+           
+        }
+        else if (pCount == 2 && targetBranchDistanceId != -1)
+        {
+
+             rand_ = rand() % pCount; // 0���������1����������뵼��
+            if (rand_ == 0) {
+                targetBranchDistanceId = -1;
+            }
+         
+        }
+        else if (pCount == 2 && targetArrayDistanceId != -1)
+        {
+            
+            
+            rand_ = rand() % pCount; // 0���������1����������뵼��
+            if (rand_ == 0) {
+                targetArrayDistanceId = -1;
+            }
+        }
+    cout<<"targetBranchDistanceId "<<targetBranchDistanceId<<endl;
+    cout<<"targetArrayDistanceId "<<targetArrayDistanceId<<endl;
+
+    int random_times=1;
+    if(targetArrayDistanceId == -1 && targetBranchDistanceId == -1)
+    {
+        cout<<"No branch or array distance data."<<endl;
+        // 当没有任何距离数据时，可能需要使用其他方式生成输入
+        // 这里暂时保留原来的逻辑，但添加了安全检查
+        inputVariablesStepTemp.stepInputs.resize(nTimes);
+        for(int i=0;i<nTimes;i++)
+        {
+            // 检查两个映射是否都为空
+            if(arrayDistanceDataMap.empty() && branchDistanceDataMap.empty()) {
+                // 如果都为空，可能需要初始化一个默认的输入变量
+                // 这里简单地跳过或使用默认值
+                cout<<"Both maps are empty, cannot generate input."<<endl;
+                continue;
+            }
+            
+            // 决定使用哪个映射
+            bool useArrayDistance = true;
+            if(!arrayDistanceDataMap.empty() && !branchDistanceDataMap.empty()) {
+                // 如果两个映射都有数据，随机选择一个
+                rand_ = rand() % 2; // 0表示数组距离引导，1表示分支距离引导
+                useArrayDistance = (rand_ == 0);
+            } else if(branchDistanceDataMap.empty()) {
+                // 如果分支距离映射为空，只能使用数组距离映射
+                useArrayDistance = true;
+            } else {
+                // 如果数组距离映射为空，只能使用分支距离映射
+                useArrayDistance = false;
+            }
+            
+            if (useArrayDistance) {
+                //从arrayDistanceDataMap中随机选择一个
+                int randid= rand() % arrayDistanceDataMap.size();
+                int randmax = rand() % arrayDistanceDataMap[randid].maxStepInput.size();
+                InputVariableCuple* inputCuple = arrayDistanceDataMap[randid].maxStepInput[randmax];
+                inputVariablesStepTemp.stepInputs[i].allInputVariable = inputCuple->allInputVariable; 
+                
+            }
+            else {
+                //从branchDistanceDataMap中随机选择一个
+                int randid= rand() % branchDistanceDataMap.size();
+                int randmax = rand() % branchDistanceDataMap[randid].maxStepInput.size();                
+                InputVariableCuple* inputCuple = branchDistanceDataMap[randid].maxStepInput[randmax];
+                inputVariablesStepTemp.stepInputs[i].allInputVariable = inputCuple->allInputVariable;                 
+            }
+        }
+
+    }
+    else if (targetArrayDistanceId != -1)
+    {
+        //random_times=arrayDistanceDataMap.size();
+        logStr = "Array Distance Guided: distance " + to_string(targetArrayDistanceId) + ".\n";
+        logStr += "VarName: " + arrayDistanceDataMap[targetArrayDistanceId].varName + ".\n";
+        //cout << logStr;
+        appendFile(exePath + "/log.txt", logStr);
+        inputVariablesStepTemp.stepInputs.resize(nTimes);         
+        for(int k=0;k<random_times;k++)
+        {
+            for (int i = 0; i < nTimes; i++)
+            {
+                InputVariableCuple* inputCuple =generateOneDistanceDataInput(&arrayDistanceDataMap[targetArrayDistanceId].maxStepInput);
+               inputVariablesStepTemp.stepInputs[k*nTimes+i].allInputVariable=inputCuple->allInputVariable;        
+                delete inputCuple;            
+            }
+        }
+            
+
+    }
+
+    else if (targetBranchDistanceId != -1)
+    {
+        logStr = "Branch Distance Guided: distance " + to_string(targetBranchDistanceId) + ".\n";
+        logStr += "Max Step Distance: " + to_string(branchDistanceDataMap[targetBranchDistanceId].maxStepDistance) + ".\n";
+        logStr += "VarName: " + branchDistanceDataMap[targetBranchDistanceId].varName + ".\n";
+        //std::cout << logStr;
+        appendFile(exePath + "/log.txt", logStr);        
+        inputVariablesStepTemp.stepInputs.resize(nTimes);
+        for (int i = 0; i < nTimes; i++)
+        {
+            InputVariableCuple* inputCuple = generateOneDistanceDataInput(&branchDistanceDataMap[targetBranchDistanceId].maxStepInput);
+            //InputVariableCuple* inputCuple = generateOneDistanceDataInput(&branchDistanceDataMap[targetBranchDistanceId].maxStepInput);
+            
+            inputVariablesStepTemp.stepInputs[i].allInputVariable = inputCuple->allInputVariable;
+            delete inputCuple;
+        }
+        
+    }
+//输出一下运行的结果
+//运行测试用例，并计算覆盖，然后存储
+        //BitmapCov::setRecordTotalBitmap();
+        //cout<<"print coverage after setRecordTotalBitmap----------------------------------------------------------------------------------------------------"<<endl;
+        //BitmapCov::printCoverage();
+        vector<TestCase> tss;
+        BitmapCov::clearCurrentBitmap();
+        resetGlobalVariables();
+        // 模型内存已恢复为 dataOri，但距离 map 不会随 reset 清空；不清理会导致 V1/V2 与当前模型脱节，且易与「本步」语义混淆
+        if (TCGHybrid::paraEnableHSTCGDistanceGuided) {
+            distanceRecordValueV1.clear();
+            distanceRecordValueV2.clear();
+            distanceRecordV1Array.clear();
+            distanceRecordV2Array.clear();
+        }
+        
+        //加一个循环，类似于STCG中的距离更新和注册，然后每次运行单步的tryStateBranch
+        //分配数据空间，运行，等等等
+        
+        int preBranchCov = BitmapCov::branchCov;
+
+        // 日志：beforeTry = tryStateBranch 之前 map 中该变量的基线；afterTry = 本步执行后 V2（无插桩命中则沿用 before）
+        bool rrLogBranchHaveBeforeTry = false;
+        bool rrLogBranchHaveAfterTry = false;
+        double rrLogBranchAtStepStart = 0;
+        double rrLogBranchAtStepEnd = 0;
+        bool rrLogArrayHaveBeforeTry = false;
+        bool rrLogArrayHaveAfterTry = false;
+        int rrLogArrayDistAtStepStart = 0;
+        int rrLogArrayDistAtStepEnd = 0;
+
+    for(int k=0;k<random_times;k++)
+
+    {
+    for(int j = 0; j < nTimes; j++)
+        {
+            rrLogBranchHaveBeforeTry = false;
+            rrLogBranchHaveAfterTry = false;
+            rrLogArrayHaveBeforeTry = false;
+            rrLogArrayHaveAfterTry = false;
+            if (TCGHybrid::paraEnableHSTCGDistanceGuided)  {
+                TCGHybrid::updateArrayDistanceValue_pre();
+            }
+            if (TCGHybrid::paraEnableHSTCGDistanceGuided && targetArrayDistanceId != -1) {
+                const string& van0 = arrayDistanceDataMap[targetArrayDistanceId].varName;
+                auto ia0 = distanceRecordV1Array.find(van0);
+                if (ia0 != distanceRecordV1Array.end()) {
+                    rrLogArrayDistAtStepStart = ia0->second;
+                    rrLogArrayHaveBeforeTry = true;
+                }
+            }
+            //char* data_once = (char*)malloc(inputsDataLengthTotal+parametersDataLengthTotal);
+            //memcpy(data_once, parameterData, parametersDataLengthTotal);    
+            //addr指向data_once参数部分后的第一个字节
+            char* data = (char*)malloc(TCGHybrid::inputsDataLengthTotal);
+            char* addr = data;
+
+            for (int i = 0; i < inputVariablesStepTemp.stepInputs[k*nTimes+j].allInputVariable.size(); i++)
+            {                                      
+                memcpy(addr,
+                    inputVariablesStepTemp.stepInputs[k*nTimes+j].allInputVariable[i].data, 
+                    inputVariablesStepTemp.stepInputs[k*nTimes+j].allInputVariable[i].pointer->length);           
+                addr += inputVariablesStepTemp.stepInputs[k*nTimes+j].allInputVariable[i].pointer->length;
+            }
+
+            if (TCGHybrid::paraEnableHSTCGDistanceGuided && targetBranchDistanceId != -1) {
+                const string& vn0 = branchDistanceDataMap[targetBranchDistanceId].varName;
+                auto j2b = distanceRecordValueV2.find(vn0);
+                if (j2b != distanceRecordValueV2.end()) {
+                    rrLogBranchAtStepStart = j2b->second;
+                    rrLogBranchHaveBeforeTry = true;
+                } else {
+                    auto j1b = distanceRecordValueV1.find(vn0);
+                    if (j1b != distanceRecordValueV1.end()) {
+                        rrLogBranchAtStepStart = j1b->second;
+                        rrLogBranchHaveBeforeTry = true;
+                    }
+                }
+            }
+
+            //int rand_ = rand() % unreachedBranchId.size();
+            //int targetBranchId = unreachedBranchId[rand_];
+            
+            tryStateBranch(data, TCGHybrid::inputsDataLengthTotal);
+            free(data);
+            BitmapCov::BitmapCovRecord* record = BitmapCov::recordCurrent();
+            //BitmapCov::step();                                      
+           // BitmapCov::branchAllBitmap[targetBranchId] = 1;
+            // 记录分支距离信息
+            //stateTraceTree.currentNode->branchDistance = StateSearch::branchDistance;
+            if (TCGHybrid::paraEnableHSTCGDistanceGuided)  {
+                if (targetBranchDistanceId != -1) {
+                    const string& vn = branchDistanceDataMap[targetBranchDistanceId].varName;
+                    auto itB2 = distanceRecordValueV2.find(vn);
+                    if (itB2 != distanceRecordValueV2.end()) {
+                        rrLogBranchAtStepEnd = itB2->second;
+                        rrLogBranchHaveAfterTry = true;
+                    } else if (rrLogBranchHaveBeforeTry) {
+                        rrLogBranchAtStepEnd = rrLogBranchAtStepStart;
+                        rrLogBranchHaveAfterTry = true;
+                    }
+                }
+                TCGHybrid::updateBranchDistanceData(&inputVariablesStepTemp.stepInputs[k*nTimes+j]);
+                
+                TCGHybrid::updateArrayDistanceValue_post();
+                if (targetArrayDistanceId != -1) {
+                    const string& van = arrayDistanceDataMap[targetArrayDistanceId].varName;
+                    auto itA2 = distanceRecordV2Array.find(van);
+                    if (itA2 != distanceRecordV2Array.end()) {
+                        rrLogArrayDistAtStepEnd = itA2->second;
+                        rrLogArrayHaveAfterTry = true;
+                    } else if (rrLogArrayHaveBeforeTry) {
+                        rrLogArrayDistAtStepEnd = rrLogArrayDistAtStepStart;
+                        rrLogArrayHaveAfterTry = true;
+                    }
+                }
+                TCGHybrid::updateArrayDistanceData(&inputVariablesStepTemp.stepInputs[k*nTimes+j]);
+
+            }
+            if (TCGHybrid::paraEnableHSTCGDistanceGuided
+                && (targetBranchDistanceId != -1 || targetArrayDistanceId != -1)) {
+                g_randomRunCaseDistCtx.valid = true;
+                g_randomRunCaseDistCtx.targetBranchDistanceId = targetBranchDistanceId;
+                g_randomRunCaseDistCtx.targetArrayDistanceId = targetArrayDistanceId;
+                g_randomRunCaseDistCtx.branchHaveBeforeTry = rrLogBranchHaveBeforeTry;
+                g_randomRunCaseDistCtx.branchHaveAfterTry = rrLogBranchHaveAfterTry;
+                g_randomRunCaseDistCtx.branchBefore = rrLogBranchAtStepStart;
+                g_randomRunCaseDistCtx.branchAfter = rrLogBranchAtStepEnd;
+                g_randomRunCaseDistCtx.arrayHaveBeforeTry = rrLogArrayHaveBeforeTry;
+                g_randomRunCaseDistCtx.arrayHaveAfterTry = rrLogArrayHaveAfterTry;
+                g_randomRunCaseDistCtx.arrayBefore = rrLogArrayDistAtStepStart;
+                g_randomRunCaseDistCtx.arrayAfter = rrLogArrayDistAtStepEnd;
+            } else {
+                g_randomRunCaseDistCtx.valid = false;
+            }
+           
+        // 处理函数级覆盖率位图，更新全局累积位图与命中计数，返回是否发现新覆盖
+        bool enc_new1 = BitmapCov::processBitmap(BitmapCov::munitBitmap, BitmapCov::munitBitmapLength, BitmapCov::munitAllBitmap, BitmapCov::munitCov);
+        // 处理分支覆盖率位图，更新全局累积位图与命中计数，返回是否发现新覆盖
+        bool enc_new2 = BitmapCov::processBitmap(BitmapCov::branchBitmap, BitmapCov::branchBitmapLength, BitmapCov::branchAllBitmap, BitmapCov::branchCov);
+        // 处理条件覆盖率位图，更新全局累积位图与命中计数，返回是否发现新覆盖
+        bool enc_new3 = BitmapCov::processBitmap(BitmapCov::condBitmap, BitmapCov::condBitmapLength, BitmapCov::condAllBitmap, BitmapCov::condCov);
+        // 处理判定覆盖率位图，更新全局累积位图与命中计数，返回是否发现新覆盖
+        bool enc_new4 = BitmapCov::processBitmap(BitmapCov::decBitmap, BitmapCov::decBitmapLength, BitmapCov::decAllBitmap, BitmapCov::decCov);
+        // 处理MC/DC覆盖率位图，更新全局累积位图与命中计数，返回是否发现新覆盖
+        bool enc_new5 = BitmapCov::processBitmap(BitmapCov::mcdcResultBitmap, BitmapCov::mcdcResultBitmapLength, BitmapCov::mcdcResultAllBitmap, BitmapCov::mcdcCov);        
+        if(preBranchCov != BitmapCov::branchCov)
+        {
+        //输出新增的分支号
+               for(int i = 0; i < BitmapCov::branchBitmapLength; i++)
+         {
+            if(to_string(BitmapCov::branchAllBitmap[i] - 0)=="1" && std::find(unreachedBranchId.begin(), unreachedBranchId.end(), i) != unreachedBranchId.end()) {
+            //cout<<"Branch "<<i<<" was covered by distance"<<endl;
+            
+        }  
+        }
+        //cout << "Branch coverage before run: " << preBranchCov << "/" << BitmapCov::branchBitmapLength << endl;
+        //cout << "Branch coverage after run: " << BitmapCov::branchCov << "/" << BitmapCov::branchBitmapLength << endl;
+        }
+        
+
+         
+         if((enc_new1 || enc_new2 || enc_new3 || enc_new4 || enc_new5))
+         //if(j==2)
+        {
+            cout<<"Found new coverage"<<endl;
+            InputVariableStep* outStep = new InputVariableStep();
+            RandomTestCaseOutPutCount++;
+            //random生成的测试用例有六个0
+            //string fileName = stringFillChar(to_string(RandomTestCaseOutPutCount), 6, '0', true) + ".bin";
+            TestResult* testRes = new TestResult();
+            TestCase testCase;
+            // 将 temp 的前 j 步放入 testCase 的 inputList
+            
+            outStep->stepInputs.reserve(k*nTimes + j + 1);
+            for (int p = 0; p <= k*nTimes + j; ++p) {   
+                outStep->stepInputs.push_back(inputVariablesStepTemp.stepInputs[p]);    
+            }
+            testCase.inputList.push_back(outStep);
+            if(!inputVariablesStepTemp.parameters.empty())
+            testCase.parameters=inputVariablesStepTemp.parameters;
+            else
+            {
+                // 从模型参数列表创建参数记录
+            for (int i = 0; i < TCGHybrid::modelParameterList.size(); i++)
+            {   //ParameterVariableData
+                ParameterVariableRecord para;
+                para.pointer = &TCGHybrid::modelParameterList[i];
+                para.data = new char[para.pointer->length];
+                //memcpy(para.data, para.pointer->address, para.pointer->length);
+                testCase.parameters.push_back(para);
+            }
+            }
+
+            tss.push_back(testCase);
+            if(testCase.inputList.empty())
+            {
+                cout<<"输入为空"<<endl;
+                return;
+            }
+        outputTestCasesBinary(tss, exePath+"/Fuzz/in/");
+        //outputTestCasesBinary(tss, exePath+"/TestCaseOutputAll");
+        delete outStep;
+        break;
+        }
+        
+        
+        if(coverageInfo.munitCov >= BitmapCov::munitCov &&
+        coverageInfo.branchCov >= BitmapCov::branchCov &&
+        coverageInfo.condCov >= BitmapCov::condCov &&
+        coverageInfo.decCov >= BitmapCov::decCov &&
+        coverageInfo.mcdcCov >= BitmapCov::mcdcCov)
+         {
+        coverageInfoRepeatCount++;
+        }
+        else
+        {
+        coverageInfo.munitCov = BitmapCov::munitCov > coverageInfo.munitCov ? BitmapCov::munitCov : coverageInfo.munitCov;
+        coverageInfo.branchCov = BitmapCov::branchCov > coverageInfo.branchCov ? BitmapCov::branchCov : coverageInfo.branchCov;
+        coverageInfo.condCov = BitmapCov::condCov > coverageInfo.condCov ? BitmapCov::condCov : coverageInfo.condCov;
+        coverageInfo.decCov = BitmapCov::decCov > coverageInfo.decCov ? BitmapCov::decCov : coverageInfo.decCov;
+        coverageInfo.mcdcCov = BitmapCov::mcdcCov > coverageInfo.mcdcCov ? BitmapCov::mcdcCov : coverageInfo.mcdcCov;
+        coverageInfoRepeatCount = 0;
+        }
+
+        if (BitmapCov::munitCov == BitmapCov::munitBitmapLength &&
+        BitmapCov::branchCov == BitmapCov::branchBitmapLength &&
+        BitmapCov::condCov == BitmapCov::condBitmapLength &&
+        BitmapCov::decCov == BitmapCov::decBitmapLength &&
+        BitmapCov::mcdcCov == BitmapCov::mcdcResultBitmapLength) {
+        TCGHybrid::finish = true;
+        }
+        }
+
+    }
+       
+}
+// 将一批测试用例以二进制形式写出到指定目录
+// 每个测试用例对应一个 .bin 文件，文件内依次写入：
+// 1. 所有模型参数（ParameterVariableRecord）的二进制数据  
+// 2. 所有步骤的所有输入变量（InputVariableRecord）的二进制数据  
+// 文件名采用 TestCase + 全局递增序号 的形式  
+void TCGHybrid::outputTestCasesBinary(vector<TestCase>& testCases, string outputDirBin)
+{
+    if(testCases.empty())
+        return;
+    
+    //string exePath = getExeDirPath();
+    string outputBinaryDir = outputDirBin;
+
+    for(int i = 0; i < testCases.size(); i++)
+    {
+        string binFileName = outputBinaryDir + "/RandomRunCase" + to_string(testCaseIdBin+1) + ".bin";
+        testCaseIdBin++;
+        //string csvFile;
+        ofstream file;
+        file.open(binFileName, ios::out|ios::binary);        
+        // 写出参数段
+        for (int j = 0; j < testCases[i].parameters.size(); j++)
+        {
+            ParameterVariableRecord* para = &testCases[i].parameters[j];
+            file.write(para->data, para->pointer->length);
+        }
+
+        // 写出输入段：按步骤、按变量依次写出
+        for (int j = 0; j < testCases[i].inputList.size(); j++)
+        {
+            InputVariableStep* inputVariableStep = testCases[i].inputList[j];
+
+            for (int k = 0; k < inputVariableStep->stepInputs.size(); k++)
+            {
+                InputVariableCuple* inputVariableCuple = &inputVariableStep->stepInputs[k];
+
+                for (int m = 0; m < inputVariableCuple->allInputVariable.size(); m++)
+                {
+                    InputVariableRecord* input = &inputVariableCuple->allInputVariable[m];
+                    file.write(input->data, input->pointer->length);
+                }
+            }
+        }
+
+        file.close();
+        logRandomRunCaseDistance(binFileName);
+    }
+}
+
+
+/**
+ * @brief 根据一组历史最优输入生成一个新的输入向量
+ *
+ * 本函数用于“距离引导”策略：当某分支已被若干“最接近”的输入（maxStepInput）记录后，
+ * 通过比对它们在每一维输入变量上的取值，若所有历史输入在某一维上完全相同，则认为该维
+ * 对命中目标分支起关键作用，保持该值不变；否则对该维进行随机扰动，以期进一步缩小距离。
+ *
+ * @param[in] maxStepInput  指向一组历史最优输入的指针数组，不能为空
+ * @return    新构造的 InputVariableCuple 指针，调用者需负责释放内存；
+ *            若 maxStepInput 为空则返回 nullptr
+ *
+ * @warning 返回的动态内存需外部手动 delete，否则造成泄漏
+ */
+TCGHybrid::InputVariableCuple* TCGHybrid::generateOneDistanceDataInput(vector<TCGHybrid::InputVariableCuple*>* maxStepInput)
+{
+    if (maxStepInput->empty())
+    {
+        cout<<"maxStepInput is empty"<<endl;
+        return nullptr;
+
+    }
+        
+    vector<bool> columnSame;
+    InputVariableCuple* inputFirst = maxStepInput->at(0);
+    int inputVarCount = inputFirst->allInputVariable.size();
+    columnSame.resize(inputVarCount, true);
+    for (int i = 1; i < maxStepInput->size(); i++)
+    {
+        InputVariableCuple* input = maxStepInput->at(i);
+        for (int j = 0; j < inputVarCount; j++)
+        {
+            InputVariableRecord* recordFirst = &inputFirst->allInputVariable[j];
+            InputVariableRecord* record = &input->allInputVariable[j];
+            if (columnSame[j] && memcmp(record->data, recordFirst->data, record->pointer->length) != 0)
+            {
+                columnSame[j] = false;
+            }
+        }
+    }
+    InputVariableCuple* newInput = new InputVariableCuple();
+    newInput->allInputVariable.resize(inputVarCount);
+    for (int j = 0; j < inputVarCount; j++)
+    {
+        if (columnSame[j])
+        {
+            InputVariableRecord* recordFirst = &inputFirst->allInputVariable[j];
+            InputVariableRecord newRecord;
+            newRecord.pointer = recordFirst->pointer;
+            newRecord.data = new char[recordFirst->pointer->length];
+            memcpy(newRecord.data, recordFirst->data, recordFirst->pointer->length);
+            newInput->allInputVariable[j] = newRecord;
+        }
+        else
+        {   //cout<<"The "<<j<<"th dimension input is different"<<endl;
+            // 若存在不同，则随机生成新值
+            InputVariableRecord newRecord;
+            newRecord.pointer = inputFirst->allInputVariable[j].pointer;
+            newRecord.data = (char*)generateRandomDataByType(newRecord.pointer->type, newRecord.pointer->length);
+            newInput->allInputVariable[j] = newRecord;
+        }
+    }
+    return newInput;
+}
+
+
+
+
+void TCGHybrid::terminateTCGHybrid()
+{
+    
+    string logStr = BitmapCov::printCoverage();
+    string exePath = getExeDirPath();
+    appendFile(exePath + "/log.txt", logStr);
+    
+    for(int i = 0; i < globalVariableList.size(); i++)
+    {
+        GlobalVariableData* globalVariableData = &(globalVariableList[i]);
+        delete[] globalVariableData->dataOri;
+    }
+    if (fuzzerProcessHandle)
+        terminateExe(fuzzerProcessHandle);
+    if (hstcgProcessHandle)
+        terminateExe(hstcgProcessHandle);
+    if (paraFuzzerProcessHandle)
+        terminateExe(paraFuzzerProcessHandle);
+    for(auto& record : testCaseBinaryCovRecordMap){
+        BitmapCov::releaseRecord(record.second);
+    }
+
+    BitmapCov::release();
+
+}
+
+
+void TCGHybrid::registGlobalVariables(string name, string type, vector<int>& arraySize, char* address, int length)
+{
+    GlobalVariableData globalVariableData;
+    globalVariableData.address = address;
+    globalVariableData.length = length;
+    globalVariableData.type = type;
+    globalVariableData.name = name;
+    globalVariableData.arraySize = arraySize;
+    globalVariableData.dataOri = new char[length];
+    ::memcpy(globalVariableData.dataOri, address, length);
+
+    globalVariableList.push_back(globalVariableData);
+
+}
+
+void TCGHybrid::registInputs(string name, string type, int length)
+{
+    InputVariableData inputRecord;
+    inputRecord.name = name;
+    inputRecord.type = type;
+    inputRecord.length = length;
+    inputsDataLengthTotal += length;
+    inputList.push_back(inputRecord);
+}
+
+void TCGHybrid::registParameters(string name, string type, int length)
+{
+    ParameterVariableData parameterRecord;
+    parameterRecord.name = name;
+    parameterRecord.type = type;
+    parameterRecord.length = length;
+    parametersDataLengthTotal += length;
+    modelParameterList.push_back(parameterRecord);
+}
+
+namespace{
+    int TestCaseOutPutCount = 0;
+}
+
+bool compareTestCaseBinary(const TCGHybrid::TestCaseBinary &x, const TCGHybrid::TestCaseBinary &y) {
+    bool xFormSTCG = stringStartsWith(x.fileName, "TestCaseFromSTCG_");
+    bool yFormSTCG = stringStartsWith(y.fileName, "TestCaseFromSTCG_");
+
+    return x.length < y.length;
+
+    //if(xFormSTCG && yFormSTCG) {
+    //    return x.fileName < y.fileName;
+    //} else if(xFormSTCG) {
+    //    return true;
+    //} else if(yFormSTCG) {
+    //    return false;
+    //} else {
+    //    return x.length < y.length;
+    //}
+}
+
+bool TCGHybrid::minimizeTestCasesBinary(string inputTestCasesDir, vector<TestCaseBinary>& testCasesBinary)
+{
+    string exePath = getExeDirPath();
+
+    string testCasesTempDir = exePath + "/TestCases";
+    string testCasesAllDir = exePath + "/TestCaseOutputAll";
+
+    vector<string> fileList;
+    listFiles(inputTestCasesDir, fileList);
+
+    if(fileList.empty())
+        return false;
+
+    testCasesBinary.resize(fileList.size());
+
+    string logStr = "Read " + to_string(fileList.size()) + " TestCase Files.\n";
+    cout << logStr;
+    appendFile(exePath + "/log.txt", logStr);
+
+    for(int i = 0; i < fileList.size(); i++)
+    {
+        string fileName = inputTestCasesDir + "/" + fileList[i];
+        int size;
+        char* data = readFileBinary(fileName, size);
+    
+        int sizeBuf = size;
+        
+        if (size < parametersDataLengthTotal + inputsDataLengthTotal) {
+            sizeBuf = parametersDataLengthTotal + inputsDataLengthTotal;
+        }
+        else if ((sizeBuf - parametersDataLengthTotal) % inputsDataLengthTotal != 0) {
+            sizeBuf += (inputsDataLengthTotal - ((sizeBuf - parametersDataLengthTotal) % inputsDataLengthTotal));
+        }
+
+        char* dataBuf = new char[sizeBuf];
+        memset((void*)dataBuf, 0, sizeBuf);
+        memcpy((void*)dataBuf, data, size);
+
+        delete[] data;
+
+        testCasesBinary[i].fileName = fileList[i];
+        testCasesBinary[i].filePath = fileName;
+        testCasesBinary[i].data = dataBuf;
+        testCasesBinary[i].length = sizeBuf;
+        testCasesBinary[i].hash = crc64((const uint8_t*)dataBuf, sizeBuf);
+    }
+
+    sort(testCasesBinary.begin(), testCasesBinary.end(), compareTestCaseBinary);
+
+    //string cmdTemp;
+    //cmdTemp = "rd /s/q \"" + testCasesTempDir + "\"";
+    //system(cmdTemp.c_str());
+    //cmdTemp = "mkdir \"" + testCasesTempDir + "\"";
+    //system(cmdTemp.c_str());
+
+
+    BitmapCov::setRecordTotalBitmap();
+
+    int offset = 0;
+    for(int i = 0; i - offset < testCasesBinary.size(); i++)
+    {
+        string filePath = testCasesBinary[i-offset].filePath;
+        int size = testCasesBinary[i-offset].length;
+        char* data = testCasesBinary[i-offset].data;
+        int64_t hash = testCasesBinary[i-offset].hash;
+
+        string fileName = testCasesBinary[i-offset].fileName;
+
+        if(testCaseBinaryCovRecordMap.find(hash) == testCaseBinaryCovRecordMap.end())
+        {
+            string logStr = "Run " + fileName + "\n";
+            //cout << logStr;
+            appendFile(exePath + "/log.txt", logStr);
+            BitmapCov::clearCurrentBitmap();
+            resetGlobalVariables();
+            tryStateBranch(data, size);
+            BitmapCov::BitmapCovRecord* record = BitmapCov::recordCurrent();
+            testCaseBinaryCovRecordMap[hash] = record;
+        }
+        else
+        {
+            string logStr = "Jump Run " + fileName + "\n";
+            //cout << logStr;
+            appendFile(exePath + "/log.txt", logStr);
+            BitmapCov::setRecordCurrentBitmap(testCaseBinaryCovRecordMap[hash]);
+        }
+        
+
+        bool enc_new1 = BitmapCov::processBitmap(BitmapCov::munitBitmap, BitmapCov::munitBitmapLength, BitmapCov::munitAllBitmap, BitmapCov::munitCov);
+        bool enc_new2 = BitmapCov::processBitmap(BitmapCov::branchBitmap, BitmapCov::branchBitmapLength, BitmapCov::branchAllBitmap, BitmapCov::branchCov);
+        bool enc_new3 = BitmapCov::processBitmap(BitmapCov::condBitmap, BitmapCov::condBitmapLength, BitmapCov::condAllBitmap, BitmapCov::condCov);
+        bool enc_new4 = BitmapCov::processBitmap(BitmapCov::decBitmap, BitmapCov::decBitmapLength, BitmapCov::decAllBitmap, BitmapCov::decCov);
+        bool enc_new5 = BitmapCov::processBitmap(BitmapCov::mcdcResultBitmap, BitmapCov::mcdcResultBitmapLength, BitmapCov::mcdcResultAllBitmap, BitmapCov::mcdcCov);
+        //bool enc_new5 = BitmapCov::processMCDCBitmap();
+        
+
+        if(enc_new1 || enc_new2 || enc_new3 || enc_new4 || enc_new5)
+        {
+            
+            TestResult* testRes = new TestResult();
+            testCasesBinary[i-offset].testResult = testRes;
+            testRes->branchCoverage = new unsigned char[BitmapCov::branchBitmapLength];
+            memcpy(testRes->branchCoverage, (const char*)BitmapCov::branchBitmap, BitmapCov::branchBitmapLength);
+            testRes->maxCoverageDepth = 0;
+
+            for(int j = 0; j < BitmapCov::branchBitmapLength; j++)
+            {
+                if(!testRes->branchCoverage[j])
+                {
+                    continue;
+                }
+                if (TCGHybridBasicBranchRegister::TCGHybrid_Branch_Depth[j] > testRes->maxCoverageDepth)
+                {
+                    testRes->maxCoverageDepth = TCGHybridBasicBranchRegister::TCGHybrid_Branch_Depth[j];
+                }
+            }
+        }
+        else
+        {
+            delete[] testCasesBinary[i-offset].data;
+            testCasesBinary.erase(testCasesBinary.begin() + (i - offset));
+            offset++;
+        }
+    }
+
+    
+    if(testCasesBinary.empty())
+        return false;
+
+    sort(testCasesBinary.begin(), testCasesBinary.end(), 
+               [](const TestCaseBinary &x, const TestCaseBinary &y) -> int {
+           return x.testResult->maxCoverageDepth > y.testResult->maxCoverageDepth;
+       });
+
+
+    for(int i = 0; i < testCasesBinary.size(); i++)
+    {
+        if(fileHashReadList.find(testCasesBinary[i].hash) != fileHashReadList.end())
+        {
+            delete[] testCasesBinary[i].data;
+            continue;
+        }
+        fileHashReadList[testCasesBinary[i].hash] = true;
+
+        TestCaseOutPutCount++;
+        string numOutName = stringFillChar(to_string(TestCaseOutPutCount), 10, '0', true) + ".bin";
+        string outPathTemp = testCasesTempDir + "/" + numOutName;
+        string outPathAll = testCasesAllDir + "/" + numOutName;
+        writeFile(outPathTemp, testCasesBinary[i].data, testCasesBinary[i].length);
+        writeFile(outPathAll, testCasesBinary[i].data, testCasesBinary[i].length);
+        copyFileTimesOntoExistingFile(outPathTemp, testCasesBinary[i].filePath);
+        copyFileTimesOntoExistingFile(outPathAll, testCasesBinary[i].filePath);
+        logMinimizeNumberedBinInheritedTimes(exePath, testCasesBinary[i].filePath, outPathTemp, outPathAll);
+        if (stringStartsWith(testCasesBinary[i].fileName, "RandomRunCase")) {
+            string logRemap = "[RandomRunCase] minimized: \"" + testCasesBinary[i].fileName + "\" -> \"" +
+                outPathTemp + "\" and \"" + outPathAll + "\"\n";
+            cout << logRemap;
+            appendFile(exePath + "/log.txt", logRemap);
+        }
+        delete[] testCasesBinary[i].data;
+        delete[] testCasesBinary[i].testResult->branchCoverage;
+        delete testCasesBinary[i].testResult;
+    }
+
+    if(coverageInfo.munitCov >= BitmapCov::munitCov &&
+        coverageInfo.branchCov >= BitmapCov::branchCov &&
+        coverageInfo.condCov >= BitmapCov::condCov &&
+        coverageInfo.decCov >= BitmapCov::decCov &&
+        coverageInfo.mcdcCov >= BitmapCov::mcdcCov)
+    {
+        coverageInfoRepeatCount++;
+    }
+    else
+    {
+        coverageInfo.munitCov = BitmapCov::munitCov > coverageInfo.munitCov ? BitmapCov::munitCov : coverageInfo.munitCov;
+        coverageInfo.branchCov = BitmapCov::branchCov > coverageInfo.branchCov ? BitmapCov::branchCov : coverageInfo.branchCov;
+        coverageInfo.condCov = BitmapCov::condCov > coverageInfo.condCov ? BitmapCov::condCov : coverageInfo.condCov;
+        coverageInfo.decCov = BitmapCov::decCov > coverageInfo.decCov ? BitmapCov::decCov : coverageInfo.decCov;
+        coverageInfo.mcdcCov = BitmapCov::mcdcCov > coverageInfo.mcdcCov ? BitmapCov::mcdcCov : coverageInfo.mcdcCov;
+        coverageInfoRepeatCount = 0;
+    }
+
+    logStr = BitmapCov::printCoverage();
+    appendFile(exePath + "/log.txt", logStr);
+
+    if (BitmapCov::munitCov == BitmapCov::munitBitmapLength &&
+        BitmapCov::branchCov == BitmapCov::branchBitmapLength &&
+        BitmapCov::condCov == BitmapCov::condBitmapLength &&
+        BitmapCov::decCov == BitmapCov::decBitmapLength &&
+        BitmapCov::mcdcCov == BitmapCov::mcdcResultBitmapLength) {
+        TCGHybrid::finish = true;
+    }
+
+    return true;
+}
+
+
+bool TCGHybrid::minimizeTestCasesBinary(string inputTestCasesDir, vector<TestCaseBinary>& testCasesBinary ,bool enableDistanceGuided)
+{
+
+    string exePath = getExeDirPath();
+
+    string testCasesTempDir = exePath + "/TestCases";
+    string testCasesAllDir = exePath + "/TestCaseOutputAll";
+
+    vector<string> fileList;
+    listFiles(inputTestCasesDir, fileList);
+
+    if(fileList.empty())
+        return false;
+
+    testCasesBinary.resize(fileList.size());
+
+    string logStr = "Read " + to_string(fileList.size()) + " TestCase Files.\n";
+    cout << logStr;
+    appendFile(exePath + "/log.txt", logStr);
+
+    for(int i = 0; i < fileList.size(); i++)
+    {
+        string fileName = inputTestCasesDir + "/" + fileList[i];
+        int size;
+        char* data = readFileBinary(fileName, size);
+        //这里的sizeBuf是输入数据的总大小，为减去参数后输入的整数倍
+        int sizeBuf = size;
+        
+        if (size < parametersDataLengthTotal + inputsDataLengthTotal) {
+            sizeBuf = parametersDataLengthTotal + inputsDataLengthTotal;
+        }
+        else if ((sizeBuf - parametersDataLengthTotal) % inputsDataLengthTotal != 0) {
+            sizeBuf += (inputsDataLengthTotal - ((sizeBuf - parametersDataLengthTotal) % inputsDataLengthTotal));
+        }
+
+        char* dataBuf = new char[sizeBuf];
+        memset((void*)dataBuf, 0, sizeBuf);
+        memcpy((void*)dataBuf, data, size);
+
+        delete[] data;
+
+        testCasesBinary[i].fileName = fileList[i];
+        testCasesBinary[i].filePath = fileName;
+        testCasesBinary[i].data = dataBuf;
+        testCasesBinary[i].length = sizeBuf;
+        testCasesBinary[i].hash = crc64((const uint8_t*)dataBuf, sizeBuf);
+    }
+
+    sort(testCasesBinary.begin(), testCasesBinary.end(), compareTestCaseBinary);
+
+    //string cmdTemp;
+    //cmdTemp = "rd /s/q \"" + testCasesTempDir + "\"";
+    //system(cmdTemp.c_str());
+    //cmdTemp = "mkdir \"" + testCasesTempDir + "\"";
+    //system(cmdTemp.c_str());
+
+
+    //setRecordTotalBitmap()的作用是将所有测试用例的覆盖率信息合并到一个BitmapCovRecord中
+    BitmapCov::setRecordTotalBitmap();
+    int offset = 0;
+    for(int i = 0; i - offset < testCasesBinary.size(); i++)
+    {
+        string filePath = testCasesBinary[i-offset].filePath;
+        int size = testCasesBinary[i-offset].length;
+        char* data = testCasesBinary[i-offset].data;
+        int64_t hash = testCasesBinary[i-offset].hash;
+
+        string fileName = testCasesBinary[i-offset].fileName;
+
+        if(testCaseBinaryCovRecordMap.find(hash) == testCaseBinaryCovRecordMap.end())
+        {
+            string logStr = "Run " + fileName + "\n";
+            //cout << logStr;
+            appendFile(exePath + "/log.txt", logStr);
+            BitmapCov::clearCurrentBitmap();
+            resetGlobalVariables();
+            
+            //加一个循环，类似于STCG中的距离更新和注册，然后每次运行单步的tryStateBranch
+            //分配数据空间，运行，等等等
+            //把参数拆出来
+            char* parameterData = (char*)malloc(parametersDataLengthTotal);
+            //cout<<"run char* parameterData = (char*)malloc(parametersDataLengthTotal); "<<i<<" "<<fileName<<endl;
+            
+            memcpy(parameterData, data, parametersDataLengthTotal);
+            int parameterOffset = 0;
+            int tryTimes = (size - parametersDataLengthTotal) / inputsDataLengthTotal;
+
+           
+           for(int j = 0; j < tryTimes; j++)
+            {
+                
+                if (TCGHybrid::paraEnableHSTCGDistanceGuided)  
+                {
+                 TCGHybrid::updateArrayDistanceValue_pre(); 
+                }
+                char* data_once = (char*)malloc(inputsDataLengthTotal+parametersDataLengthTotal);
+                memcpy(data_once, parameterData, parametersDataLengthTotal);    
+                //addr指向data_once参数部分后的第一个字节
+                char* addr = data_once+parametersDataLengthTotal;
+                //cout<<"run char* addr = data_once+parametersDataLengthTotal; \n"<<addr<<" \n"<<fileName<<endl;
+                //通过data_once构建一个Cuple
+                TCGHybrid::InputVariableCuple* inputVariableCuple = new TCGHybrid::InputVariableCuple();
+                for (int i = 0; i < inputList.size(); i++)
+                {
+                    //cout<<"进入循环"<<i<<endl;
+                    TCGHybrid::InputVariableRecord* inputVariableRecord = new TCGHybrid::InputVariableRecord(); 
+                    inputVariableRecord->pointer = &(inputList[i]);
+                     memcpy(addr,
+                        data+parametersDataLengthTotal+i*inputVariableRecord->pointer->length +j*inputsDataLengthTotal, //这里的8指的是这个模型一个端口的输入是8字节，后续要改成变量
+                        inputVariableRecord->pointer->length );
+                    inputVariableRecord->data = new char[inputList[i].length];
+                    memcpy(inputVariableRecord->data, addr, inputVariableRecord->pointer->length );
+                    //vector加入新元素使用 emplace_back 函数
+                    inputVariableCuple->allInputVariable.push_back(*inputVariableRecord);
+
+                    addr += inputVariableRecord->pointer->length;
+                }
+                //一个new cuple
+                //cout<<"run tryStateBranch "<<j<<" times"<<endl;
+                tryStateBranch(data_once, inputsDataLengthTotal);
+                free(data_once);
+                //BitmapCov::step();               
+                // 记录分支距离信息
+                //stateTraceTree.currentNode->branchDistance = StateSearch::branchDistance;
+                if (TCGHybrid::paraEnableHSTCGDistanceGuided)  {
+                    TCGHybrid::updateBranchDistanceData(inputVariableCuple);
+                    updateArrayDistanceValue_post();
+                    updateArrayDistanceData(inputVariableCuple);
+                }               
+            }  
+            //cout<<"FIle run over print coverage"<<endl;   
+            BitmapCov::BitmapCovRecord* record = BitmapCov::recordCurrent();         
+            // 记录测试用例二进制文件的覆盖率信息
+            testCaseBinaryCovRecordMap[hash] = record;                      
+            //BitmapCov::printCoverage();                            
+            
+        }
+        else
+        {
+            string logStr = "Jump Run " + fileName + "\n";
+            //cout << logStr;
+            appendFile(exePath + "/log.txt", logStr);
+            BitmapCov::setRecordCurrentBitmap(testCaseBinaryCovRecordMap[hash]);
+        }
+        
+
+        // 处理函数级覆盖率位图，更新全局累积位图与命中计数，返回是否发现新覆盖
+        bool enc_new1 = BitmapCov::processBitmap(BitmapCov::munitBitmap, BitmapCov::munitBitmapLength, BitmapCov::munitAllBitmap, BitmapCov::munitCov);
+        // 处理分支覆盖率位图，更新全局累积位图与命中计数，返回是否发现新覆盖
+        bool enc_new2 = BitmapCov::processBitmap(BitmapCov::branchBitmap, BitmapCov::branchBitmapLength, BitmapCov::branchAllBitmap, BitmapCov::branchCov);
+        // 处理条件覆盖率位图，更新全局累积位图与命中计数，返回是否发现新覆盖
+        bool enc_new3 = BitmapCov::processBitmap(BitmapCov::condBitmap, BitmapCov::condBitmapLength, BitmapCov::condAllBitmap, BitmapCov::condCov);
+        // 处理判定覆盖率位图，更新全局累积位图与命中计数，返回是否发现新覆盖
+        bool enc_new4 = BitmapCov::processBitmap(BitmapCov::decBitmap, BitmapCov::decBitmapLength, BitmapCov::decAllBitmap, BitmapCov::decCov);
+        // 处理MC/DC覆盖率位图，更新全局累积位图与命中计数，返回是否发现新覆盖
+        bool enc_new5 = BitmapCov::processBitmap(BitmapCov::mcdcResultBitmap, BitmapCov::mcdcResultBitmapLength, BitmapCov::mcdcResultAllBitmap, BitmapCov::mcdcCov);        
+
+        if(enc_new1 || enc_new2 || enc_new3 || enc_new4 || enc_new5)
+        {
+            
+            // 为当前测试用例创建测试结果对象
+            TestResult* testRes = new TestResult();
+            testCasesBinary[i-offset].testResult = testRes;
+            // 拷贝当前分支覆盖位图
+            testRes->branchCoverage = new unsigned char[BitmapCov::branchBitmapLength];
+            memcpy(testRes->branchCoverage, (const char*)BitmapCov::branchBitmap, BitmapCov::branchBitmapLength);
+            testRes->maxCoverageDepth = 0;
+
+            // 遍历分支覆盖位图，计算该测试用例所触及的最大分支深度
+            for(int j = 0; j < BitmapCov::branchBitmapLength; j++)
+            {
+                // 若当前分支未被覆盖，则跳过
+                if(!testRes->branchCoverage[j])
+                {
+                    continue;
+                }
+                if (TCGHybridBasicBranchRegister::TCGHybrid_Branch_Depth[j] > testRes->maxCoverageDepth)
+                {
+                    testRes->maxCoverageDepth = TCGHybridBasicBranchRegister::TCGHybrid_Branch_Depth[j];
+                }
+            }
+        }
+        else
+        {
+            // 释放当前测试用例数据内存，并从列表中移除
+            delete[] testCasesBinary[i-offset].data;
+            testCasesBinary.erase(testCasesBinary.begin() + (i - offset));
+            offset++;
+        }
+    }
+
+    
+    if(testCasesBinary.empty())
+        return false;
+
+    // 按测试用例的最大覆盖深度降序排序，优先处理覆盖更深的用例
+    sort(testCasesBinary.begin(), testCasesBinary.end(), 
+               [](const TestCaseBinary &x, const TestCaseBinary &y) -> int {
+           return x.testResult->maxCoverageDepth > y.testResult->maxCoverageDepth;
+       });
+
+    // 遍历所有待处理的二进制测试用例，将他们编号并写入目录
+    for(int i = 0; i < testCasesBinary.size(); i++)
+    {
+        // 若该用例哈希已处理过，则跳过并释放内存
+        if(fileHashReadList.find(testCasesBinary[i].hash) != fileHashReadList.end())
+        {
+            delete[] testCasesBinary[i].data;
+            continue;
+        }
+        // 标记该哈希已处理，避免重复
+        fileHashReadList[testCasesBinary[i].hash] = true;
+
+        // 更新全局计数器，生成固定长度文件名
+        TestCaseOutPutCount++;
+        string fileName = stringFillChar(to_string(TestCaseOutPutCount), 10, '0', true) + ".bin";
+
+        // 同时写入临时目录与总归档目录
+        string outPathTemp = testCasesTempDir + "/" + fileName;
+        writeFile(outPathTemp, testCasesBinary[i].data, testCasesBinary[i].length);
+        //writeFile(testCasesAllDir  + "/" + fileName, testCasesBinary[i].data, testCasesBinary[i].length);
+        copyFileTimesOntoExistingFile(outPathTemp, testCasesBinary[i].filePath);
+        logMinimizeNumberedBinInheritedTimes(exePath, testCasesBinary[i].filePath, outPathTemp);
+        if (stringStartsWith(testCasesBinary[i].fileName, "RandomRunCase")) {
+            string logRemap = "[RandomRunCase] minimized: \"" + testCasesBinary[i].fileName + "\" -> \"" +
+                outPathTemp + "\"\n";
+            cout << logRemap;
+            appendFile(exePath + "/log.txt", logRemap);
+        }
+ 
+        // 释放用例数据及测试结果内存
+        delete[] testCasesBinary[i].data;
+        delete[] testCasesBinary[i].testResult->branchCoverage;
+        delete testCasesBinary[i].testResult;
+    }
+
+    // 若本轮所有维度的覆盖率均未提升，则重复计数器加1
+    if(coverageInfo.munitCov >= BitmapCov::munitCov &&
+        coverageInfo.branchCov >= BitmapCov::branchCov &&
+        coverageInfo.condCov >= BitmapCov::condCov &&
+        coverageInfo.decCov >= BitmapCov::decCov &&
+        coverageInfo.mcdcCov >= BitmapCov::mcdcCov)
+    {
+        coverageInfoRepeatCount++;
+    }
+    else
+    {
+        // 否则，将历史最优覆盖率更新为当前更高值，并重置重复计数器
+        coverageInfo.munitCov = BitmapCov::munitCov > coverageInfo.munitCov ? BitmapCov::munitCov : coverageInfo.munitCov;
+        coverageInfo.branchCov = BitmapCov::branchCov > coverageInfo.branchCov ? BitmapCov::branchCov : coverageInfo.branchCov;
+        coverageInfo.condCov = BitmapCov::condCov > coverageInfo.condCov ? BitmapCov::condCov : coverageInfo.condCov;
+        coverageInfo.decCov = BitmapCov::decCov > coverageInfo.decCov ? BitmapCov::decCov : coverageInfo.decCov;
+        coverageInfo.mcdcCov = BitmapCov::mcdcCov > coverageInfo.mcdcCov ? BitmapCov::mcdcCov : coverageInfo.mcdcCov;
+        coverageInfoRepeatCount = 0;
+    }
+
+    logStr = BitmapCov::printCoverage();
+    appendFile(exePath + "/log.txt", logStr);
+
+    if (BitmapCov::munitCov == BitmapCov::munitBitmapLength &&
+        BitmapCov::branchCov == BitmapCov::branchBitmapLength &&
+        BitmapCov::condCov == BitmapCov::condBitmapLength &&
+        BitmapCov::decCov == BitmapCov::decBitmapLength &&
+        BitmapCov::mcdcCov == BitmapCov::mcdcResultBitmapLength) {
+        TCGHybrid::finish = true;
+    }
+
+    return true;
+}
+
+
+void TCGHybrid::updateArrayDistanceValue_pre()
+{
+
+    for (int i = 0; i < arrayDistanceDataMap.size(); i++)
+    {
+        int distanceId = i;
+        TCGHybrid::ArrayDistanceData* distanceData = &arrayDistanceDataMap[distanceId];
+
+        if (distanceRecordV2Array.find(distanceData->varName) != distanceRecordV2Array.end())
+        {
+            distanceRecordV1Array[distanceData->varName] = distanceRecordV2Array[distanceData->varName];
+            continue;
+        }
+        else
+        {
+            int distance = distanceFunction_array(distanceData->arrayValue, distanceData->arrayDataLength, distanceData->defaultArrayValue);
+            distanceRecordV1Array[distanceData->varName] = distance;
+        }
+
+    }
+
+}
+void TCGHybrid::updateArrayDistanceValue_post()
+{
+
+
+    for (int i = 0; i < arrayDistanceDataMap.size(); i++)
+    {
+        int distanceId = i;
+        TCGHybrid::ArrayDistanceData* distanceData = &arrayDistanceDataMap[distanceId];
+
+        int distance = distanceFunction_array(distanceData->arrayValue, distanceData->arrayDataLength, distanceData->defaultArrayValue);
+        distanceRecordV2Array[distanceData->varName] = distance;
+    }
+}
+void TCGHybrid::updateArrayDistanceData(InputVariableCuple* stepInput)
+{
+    for (int i = 0; i < arrayDistanceDataMap.size(); i++)
+    {
+        int distanceId = i;
+        TCGHybrid::ArrayDistanceData* distanceData = &arrayDistanceDataMap[distanceId];
+
+        int lastDistance = distanceRecordV1Array[distanceData->varName];
+
+        int currentDistance = distanceRecordV2Array[distanceData->varName];
+
+        int stepDistance = lastDistance - currentDistance;
+
+        if (stepDistance > distanceData->maxStepDistance)
+        {
+            distanceData->maxStepDistance = stepDistance;
+
+            for (auto data : distanceData->maxStepInput)
+            {
+                data->release();
+            }
+            distanceData->maxStepInput.clear();
+
+            distanceData->maxStepInput.push_back(stepInput->clone());
+
+            string logStr = "update distance: " + to_string(distanceId) + "\n";
+            logStr += "varName: " + distanceData->varName + "\n";
+            logStr += "maxStepDistance: " + to_string(distanceData->maxStepDistance) + "\n";
+            logStr += "currentDistance: " + to_string(currentDistance) + "\n";
+
+            //std::cout << logStr;
+
+            appendFile(exePath + "/log.txt", logStr);
+        }
+        else if (stepDistance == distanceData->maxStepDistance && distanceData->maxStepInput.size() < 5)
+        {
+            distanceData->maxStepInput.push_back(stepInput->clone());
+        }
+    }
+
+}
+int TCGHybrid::distanceFunction_array(unsigned char* addr, int length, unsigned char* defaultValue)
+{
+    int distance = length;
+
+    for (int i = 0; i < length; i++)
+    {
+        if (addr[i] != defaultValue[i])
+        {
+            distance--;
+        }
+    }
+
+    return distance;
+}
+double TCGHybrid::distanceFunction_value(double value, char opType, double target)
+{
+    double distance = 0;
+    switch (opType)
+    {
+    case '<':
+        if (value < target)
+            distance = 0;
+        else
+            distance = value - target;
+        break;
+    case '>':
+        if (value > target)
+            distance = 0;
+        else
+            distance = target - value;
+        break;
+    default:
+        break;
+    }
+
+
+    //StateSearch::branchDistance[distanceId] = distance;
+
+    return distance;
+}
+//暂且直接设置为char指针，后续再根据需要修改
+//输入修改为一个InputVariableCuple指针
+void TCGHybrid::updateBranchDistanceData( TCGHybrid::InputVariableCuple* stepInput)
+{
+    /*----------------------------------------------------------
+     * 遍历所有已注册的分支距离数据，计算本次步进的距离改善
+     *---------------------------------------------------------*/
+    for (int i = 0; i < (int)TCGHybrid::branchDistanceDataMap.size(); ++i)
+    {
+        int distanceId = i;
+        TCGHybrid::BranchDistanceData* distanceData = &TCGHybrid::branchDistanceDataMap[distanceId];    
+
+        /* 若当前节点未记录该变量的 V1 值，则跳过 */
+        if (TCGHybrid::distanceRecordValueV1.find(distanceData->varName) ==
+            TCGHybrid::distanceRecordValueV1.end())
+        {
+            continue;
+        }
+
+        /* 计算上次距离与当前距离 */
+        double lastValue      = TCGHybrid::distanceRecordValueV1[distanceData->varName];
+        double lastDistance   = distanceFunction_value(lastValue,
+                                                       distanceData->distanceOpType,
+                                                       distanceData->targetValue);
+
+        double currentValue   = TCGHybrid::distanceRecordValueV2[distanceData->varName];
+        double currentDistance= distanceFunction_value(currentValue,
+                                                       distanceData->distanceOpType,
+                                                       distanceData->targetValue);
+
+        /* 距离改善量：正值表示向目标靠近 */
+        double stepDistance   = lastDistance - currentDistance;
+
+        /*---- 优于历史最优，更新最优记录 ----*/
+        if (stepDistance > distanceData->maxStepDistance)
+        {
+            distanceData->maxStepDistance = stepDistance;
+
+            /* 释放旧输入内存 */
+            for (auto data : distanceData->maxStepInput)
+                data->release();
+            distanceData->maxStepInput.clear();
+
+            /* 记录新最优输入 */
+            //通过data_once创建StepInput
+
+            
+            distanceData->maxStepInput.push_back(stepInput->clone());
+
+            /* 打印日志 */
+            string logStr = "update distance: " + to_string(distanceId) + "\n"
+                          + "varName: "         + distanceData->varName + "\n"
+                          + "maxStepDistance: " + to_string(distanceData->maxStepDistance) + "\n"
+                          + "currentDistance: " + to_string(currentDistance) + "\n"
+                          + "distanceData.branchId: " + to_string(distanceData->branchId) + "\n"
+                          + "target-maxStepDistance:" + to_string(distanceData->targetValue - distanceData->maxStepDistance) + "\n";
+            //std::cout << logStr;
+            appendFile(exePath + "/log.txt", logStr);
+        }
+        /*---- 等于最优且保留样本不足 5 个，追加记录 ----*/
+        else if (stepDistance == distanceData->maxStepDistance
+                 && distanceData->maxStepInput.size() < 5)
+        {
+            //cout<<"Same maxStepDistance, append input"<<endl;   
+            distanceData->maxStepInput.push_back(stepInput->clone());
+        }
+    }
+
+    /*----------------------------------------------------------
+     * 同步：将 V2 的最新值拷贝到 V1，为下一步计算做准备
+     *---------------------------------------------------------*/
+    for (int i = 0; i < (int)TCGHybrid::branchDistanceDataMap.size(); ++i)
+    {
+        int distanceId = i;
+        TCGHybrid::BranchDistanceData* distanceData = &TCGHybrid::branchDistanceDataMap[distanceId];
+        distanceRecordValueV1[distanceData->varName] =
+            distanceRecordValueV2[distanceData->varName];
+    }
+}
+
+
+
+void TCGHybrid::updateBranchDistanceValue(const char* varName, double var)
+{
+    if (!TCGHybrid::paraEnableHSTCGDistanceGuided)
+        return;
+
+    map<string, double>* v1 = &TCGHybrid::distanceRecordValueV1;
+    bool v1Empty = (v1->find(varName) == v1->end());
+   
+    if (v1Empty) // 若V1中不存在该变量，则直接赋值
+    {
+        v1->emplace(varName, var);
+    }
+    distanceRecordValueV2[varName] = var;
+
+    //if (string(varName) == "ComplexParaTest2_DW->A" && var < 0) //!(fabs(var - 30) < 0.0001)
+    //{
+    //    cout << "updateDistanceValue: " << varName << " = " << var << endl;
+    //}
+    //if (distanceRecordValueOriMap.find(varName) == distanceRecordValueOriMap.end())
+    //{
+    //    distanceRecordValueOriMap[varName] = var;
+    //}
+}
+
+bool TCGHybrid::callFuzzer()
+{
+    string exePath = getExeDirPath();
+    string fuzzerPath = exePath + "/Fuzz/Fuzzer.exe";
+    string cmd = fuzzerPath + " -print_final_stats=1 -detect_leaks=0 -max_total_time=3600 -reload=5 -len_control=20 In";
+    setCurrentDirPath(exePath + "/Fuzz");
+    fuzzerProcessHandle = asyncExecute(cmd.c_str());
+    setCurrentDirPath(exePath);
+    return true;
+}
+
+bool TCGHybrid::callHSTCG()
+{
+    string exePath = getExeDirPath();
+    string hstcgPath = exePath + "/HSTCG/HSTCG.exe";
+    string cmd = hstcgPath + " -ob ../Fuzz/In";
+    if(TCGHybrid::paraEnableParaFuzzer) {
+        cmd += " -outputLong 5";
+        // cmd += " -outputLongMaxLen 1200";
+    }
+    if(TCGHybrid::paraEnableHSTCGDistanceGuided) {
+        cmd += " -distanceGuided true";
+    }
+
+    setCurrentDirPath(exePath + "/HSTCG");
+    hstcgProcessHandle = asyncExecute(cmd.c_str());
+    setCurrentDirPath(exePath);
+    return true;
+}
+
+namespace {
+    int lastSTCGTestCaseId = 0;
+    int pureRunSTCGTimeBaseLine = 10000;
+}
+bool TCGHybrid::callSTCGForSolve()
+{
+    string exePath = getExeDirPath();
+
+    string cmdTemp;
+    cmdTemp = "rd /s/q \"" + exePath + "/STCG/TestCaseOutput\"";
+    system(cmdTemp.c_str());
+    cmdTemp = "mkdir \"" + exePath + "/STCG/TestCaseOutput\"";
+    system(cmdTemp.c_str());
+    cmdTemp = "mkdir \"" + exePath + "/STCG/TestCaseOutput/Binary\"";
+    system(cmdTemp.c_str());
+
+    //writeFile(exePath + "/TempInputForSTCG/temp.bin", testCaseBinary.data, testCaseBinary.length);
+
+    setCurrentDirPath(exePath + "/STCG");
+
+    string cmd = "STCG.exe"; 
+    //if(coverageInfoRepeatCount < 2) // ����Fuzz����
+    
+
+    int pureRunSTCGTime = pureRunSTCGTimeBaseLine * 15 / 10;
+    cmd += " -tb " + exePath + "/Fuzz/In"; //  -noRand true   
+    //cmd += " -once true";
+    cmd += " -t " + to_string(pureRunSTCGTime);
+    cmd += " -distanceGuided true";
+    if (TCGHybrid::paraEnableParaFuzzer) {
+        cmd += " -outputLong 5";
+        // cmd += " -outputLongMaxLen 1200";
+    }
+
+    string logStr = cmd + "\n";
+    //cout << logStr;
+    appendFile(exePath + "/log.txt", logStr);
+
+    int res = system(cmd.c_str());
+    
+    if(res == 1) {
+        cmd += " -sm 2";
+        logStr = cmd + "\n";
+        //cout << logStr;
+        appendFile(exePath + "/log.txt", logStr);
+        res = system(cmd.c_str());
+    }
+    
+    
+    setCurrentDirPath(exePath);
+
+    vector<string> fileList;
+    string STCGOutputDir = exePath + "/STCG/TestCaseOutput/Binary";
+    if(!isFolderExist(STCGOutputDir))
+        return false;
+    listFiles(STCGOutputDir, fileList);
+    if(fileList.empty())
+        return false;
+    for(int i = 0; i < fileList.size(); i++)
+    {
+        lastSTCGTestCaseId++;
+        string fileNameSrc = STCGOutputDir + "/" + fileList[i];
+        string fileNameDst1 = exePath + "/Fuzz/In/TestCaseFromSTCG_" + stringFillChar(to_string(lastSTCGTestCaseId), 10, '0', true) + ".bin";
+        //string fileNameDst2 = exePath + "/TestCaseOutputAll/TestCaseFromSTCG_" + to_string(lastSTCGTestCaseId) + ".bin";
+        copyFileOne(fileNameSrc, fileNameDst1);
+        //copyFileOne(fileNameSrc, fileNameDst2);
+    }
+    return true;
+}
+
+namespace {
+    map<string, bool> copyInputFileMap;
+    map<string, bool> copyOutputFileMap;
+    clock_t lastCopyTime = 0;
+    int copyCountTotal = 0;
+}
+
+bool TCGHybrid::callParaFuzzer()
+{
+    clock_t currentTime = clock();
+    if (currentTime - lastCopyTime < 3000)
+        return false;
+    lastCopyTime = currentTime;
+
+    string exePath = getExeDirPath();
+
+    // ��Fuzz/InĿ¼�������������ļ���FuzzPara/InputSequenceĿ¼��һֱֻ������������
+    copyCountTotal += copyMaxFileToInputSquenceDir(exePath + "/Fuzz/In", 3);
+    if(TCGHybrid::paraEnableHSTCG)
+        copyCountTotal += copyMaxFileToInputSquenceDir(exePath + "/HSTCG/LongTestCases/Binary", 3);
+    if (TCGHybrid::paraEnableSTCG)
+        copyCountTotal += copyMaxFileToInputSquenceDir(exePath + "/STCG/LongTestCases/Binary", 3);
+
+    if (copyCountTotal <= 0)
+        return false;
+
+    if (paraFuzzerProcessHandle)
+    {
+        // ��ParaFuzzer/OutĿ¼�µ��ļ�������Fuzz/In/Ŀ¼
+        vector<string> fileList;
+        listFiles(exePath + "/ParaFuzzer/Out", fileList);
+        for (int i = 0; i < fileList.size(); i++)
+        {
+            string fileName = fileList[i];
+            if (copyOutputFileMap.find(fileName) != copyOutputFileMap.end())
+                continue;
+            string filePath = exePath + "/ParaFuzzer/Out/" + fileName;
+            string fileNameDst = exePath + "/Fuzz/In/" + fileName;
+            copyFileOne(filePath, fileNameDst);
+            copyOutputFileMap[fileName] = true;
+        }
+    }
+
+    if (!paraFuzzerProcessHandle)
+    {
+        string exePath = getExeDirPath();
+        string paraFuzzerPath = exePath + "/FuzzPara/Fuzzer.exe";
+        string cmd = paraFuzzerPath;
+        cmd += " -print_final_stats=1";
+        cmd += " -detect_leaks=0";
+        cmd += " -max_total_time=3600";
+        //cmd += " -reload=5";
+        cmd += " -len_control=0";
+        cmd += " -max_len=" + to_string(parametersDataLengthTotal);
+        cmd += " In";
+
+        setCurrentDirPath(exePath + "/FuzzPara");
+        paraFuzzerProcessHandle = asyncExecute(cmd.c_str());
+        setCurrentDirPath(exePath);
+    }
+
+
+    
+    return false;
+}
+
+namespace {
+    struct MaxSizeFileList {
+        string dir;
+        vector<pair<string, int>> fileSize;
+    };
+    map<string, MaxSizeFileList> maxSizeFileListMap;
+}
+int TCGHybrid::copyMaxFileToInputSquenceDir(string srcDir, int fileCount)
+{
+    vector<string> fileList;
+    listFiles(srcDir, fileList);
+    if (fileList.empty())
+        return 0;
+    vector<pair<string, int>> fileListSize;
+    for (int i = 0; i < fileList.size(); i++)
+    {
+        string fileName = fileList[i];
+        string filePath = srcDir + "/" + fileName;
+        int size = getFileSize(filePath);
+        //if (size > parametersDataLengthTotal + inputsDataLengthTotal)
+        fileListSize.push_back(make_pair(fileName, size));
+    }
+    sort(fileListSize.begin(), fileListSize.end(),
+        [](const pair<string, int>& x, const pair<string, int>& y) -> int {
+        return x.second > y.second;
+    });
+
+    if (maxSizeFileListMap.find(srcDir) == maxSizeFileListMap.end())
+    {
+        MaxSizeFileList maxSizeFileList;
+        maxSizeFileList.dir = srcDir;
+        maxSizeFileListMap[srcDir] = maxSizeFileList;
+    }
+
+    MaxSizeFileList* maxSizeFileList = &(maxSizeFileListMap[srcDir]);
+
+    // ���maxSizeFileList->fileSize�е��ļ����ڲ���fileListSize��ǰfileCount�еģ���ɾ����Ӧ���ļ�
+    map<string, bool> deleteFileList;
+    map<string, bool> copyFileList;
+    for (int i = 0; i < maxSizeFileList->fileSize.size(); i++)
+    {
+        deleteFileList[maxSizeFileList->fileSize[i].first] = true;
+    }
+    maxSizeFileList->fileSize.clear();
+    int copyCount = 0;
+    for (int i = 0; i < fileListSize.size() && i < fileCount; i++)
+    {
+        string fileName = fileListSize[i].first;
+        maxSizeFileList->fileSize.push_back(fileListSize[i]);
+        if (deleteFileList.find(fileName) != deleteFileList.end())
+        {
+            deleteFileList.erase(fileName);
+        }
+        else
+        {
+            copyFileList[fileName] = true;
+            copyCount++;
+        }
+    }
+    for (auto it = deleteFileList.begin(); it != deleteFileList.end(); it++)
+    {
+        string fileName = it->first;
+        string fileNameDst = exePath + "/FuzzPara/InputSequence/" + fileName;
+        deleteFile(fileNameDst);
+    }
+    for (auto it = copyFileList.begin(); it != copyFileList.end(); it++)
+    {
+        string fileName = it->first;
+        string filePath = srcDir + "/" + fileName;
+        string fileNameDst = exePath + "/FuzzPara/InputSequence/" + fileName;
+        copyFileOne(filePath, fileNameDst);
+    }
+
+    //for (int i = 0; i < fileListSize.size() && i < fileCount; i++)
+    //{
+    //    string fileName = fileListSize[i].first;
+    //    if (copyInputFileMap.find(fileName) != copyInputFileMap.end())
+    //        continue;
+    //    string filePath = srcDir + "/" + fileName;
+    //    string fileNameDst = exePath + "/FuzzPara/InputSequence/" + fileName;
+    //    copyFileOne(filePath, fileNameDst);
+    //    copyInputFileMap[fileName] = true;
+    //    copyCount++;
+    //}
+    return copyCount;
+}
+
+/**
+ * @brief 将全局变量恢复为初始值
+ *
+ * 遍历 globalVariableList，把每个全局变量对应的 dataOri（原始备份）内容
+ * 拷贝回其运行时地址，实现状态重置，为下一轮测试用例执行提供干净环境。
+ *
+ * @note 该函数在每次执行新测试用例前调用，确保全局状态不残留上一用例的影响。
+ */
+void TCGHybrid::resetGlobalVariables()
+{
+    for(int i = 0; i < globalVariableList.size(); i++)
+    {
+        GlobalVariableData* globalVariableData = &(globalVariableList[i]);
+        char* addr = globalVariableData->address;
+        int size = globalVariableData->length;
+        memcpy(addr, globalVariableData->dataOri, size);
+    }
+}
+
+TCGHybrid::InputVariableCuple* TCGHybrid::InputVariableCuple::clone()
+{
+    InputVariableCuple* newCuple = new InputVariableCuple();
+    newCuple->allInputVariable.resize(this->allInputVariable.size());
+    for (int i = 0; i < this->allInputVariable.size(); i++)
+    {
+        InputVariableRecord* record = &this->allInputVariable[i];
+        InputVariableRecord newRecord;
+        newRecord.pointer = record->pointer;
+        newRecord.data = new char[record->pointer->length];
+        memcpy(newRecord.data, record->data, record->pointer->length);
+        newCuple->allInputVariable[i] = newRecord;
+    }
+    return newCuple;
+}
+
+void TCGHybrid::InputVariableCuple::release()
+{
+    for (int i = 0; i < this->allInputVariable.size(); i++)
+    {
+        InputVariableRecord* record = &this->allInputVariable[i];
+        delete[] record->data;
+    }
+    this->allInputVariable.clear();
+}

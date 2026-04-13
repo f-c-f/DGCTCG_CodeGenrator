@@ -1,0 +1,12 @@
+inline void vsadd_vv(int *inport1, int *inport2, int *outport)
+{
+    asm("li t0, 4\n\t"
+        "vsetvli zero, t0, e32, m1\n\t"
+        "vle.v v1, (%[in1_ptr])\n\t"
+        "vle.v v2, (%[in2_ptr])\n\t"
+        "vsadd.vv v3, v1, v2\n\t"
+        "vse.v v3, (%[out_ptr])\n\t"
+        :
+        : [out_ptr] "r"(outport), [in1_ptr] "r"(inport1), [in2_ptr] "r"(inport2)
+        : "v1", "v2", "v3");
+}

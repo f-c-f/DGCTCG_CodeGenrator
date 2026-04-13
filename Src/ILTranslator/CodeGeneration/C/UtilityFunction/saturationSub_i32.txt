@@ -1,0 +1,9 @@
+void saturationSub_i32(int in1, int in2, int* out){
+  if ((in1 >= 0) && (in2 < in1 - (int)(2147483647)) {
+    *out = (int)(2147483647);
+  } else if ((in1 < 0) && (in2 > in1 - (int)(-2147483647-1)) {
+    *out = (int)(-2147483647-1);
+  } else {
+    *out = in1 - in2;
+  }
+}

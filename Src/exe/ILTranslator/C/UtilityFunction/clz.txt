@@ -1,0 +1,4 @@
+inline void clz(int *inport, int *outport)
+{
+    __asm("clz %0, %1 \n" : "=d"(*outport) : "d"(*inport));
+}

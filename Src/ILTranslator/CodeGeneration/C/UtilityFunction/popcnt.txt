@@ -1,0 +1,4 @@
+inline void popcnt(int *inport, int *outport)
+{
+    __asm("popcnt.w %0, %1 \n" : "=d"(*outport) : "d"(*inport));
+}

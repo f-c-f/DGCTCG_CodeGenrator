@@ -1,0 +1,4 @@
+inline void cadd_n(int *condition, int *inport1, int *inport2, int *outport)
+{
+    __asm("caddn %0, %1, %2 \n" : "=d"(*outport) : "d"(*condition), "d"(*inport1), "d"(*inport2));
+}

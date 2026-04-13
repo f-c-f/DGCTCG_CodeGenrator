@@ -1,0 +1,4 @@
+inline void qseed_f(float *inport, float *outport)
+{
+    __asm("qseed.f %0, %1 \n" : "=d"(*outport) : "d"(*inport));
+}

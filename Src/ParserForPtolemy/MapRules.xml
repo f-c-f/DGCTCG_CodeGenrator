@@ -1,0 +1,16 @@
+<Root>
+    <Actor Name="Const" Value="Constant"/>
+    <Actor Name="TriggeredSinewave" Value="Sinewave">
+    </Actor>
+    <Actor Name="Scale" Value="Gain">
+        <Parameter Name="Factor" Value="Gain"/>
+    </Actor>
+    <Actor Name="BooleanSwitch">
+        <Inport Name="Control" Value="Ctrl"/>
+    </Actor>
+    <Actor Name="Ramp">
+        <Parameter Name="Init" Value="Start"/>
+        <Parameter Name="Step" Value="Slope"/>
+    </Actor>
+    <Actor Name="AbsoluteValue" Value="Abs"/>
+</Root>

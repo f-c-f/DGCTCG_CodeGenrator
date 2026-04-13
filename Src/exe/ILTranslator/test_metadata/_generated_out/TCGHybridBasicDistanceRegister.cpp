@@ -1,0 +1,70 @@
+#include "TCGHybridBasicDistanceRegister.h"
+#include "define.h"
+#include "TCGHybridBasic.h"
+void TCGHybridBasicDistanceRegister::registAllDistance()
+{
+    TCGHybrid::branchDistanceDataMap[0] = TCGHybrid::BranchDistanceData(48, "DynamicCompressionModel_DW->dly_shift_1_DSTATE[0]", '<', 0);
+    TCGHybrid::branchDistanceDataMap[1] = TCGHybrid::BranchDistanceData(56, "DynamicCompressionModel_DW->dly_shift_3_DSTATE[0]", '<', 0);
+    TCGHybrid::branchDistanceDataMap[2] = TCGHybrid::BranchDistanceData(58, "DynamicCompressionModel_DW->dly_shift_4_DSTATE[0]", '<', 0);
+    TCGHybrid::branchDistanceDataMap[3] = TCGHybrid::BranchDistanceData(60, "DynamicCompressionModel_DW->dly_shift_5_DSTATE[0]", '<', 0);
+    TCGHybrid::branchDistanceDataMap[4] = TCGHybrid::BranchDistanceData(78, "rtb_Subtract_c", '>', 15);
+    TCGHybrid::branchDistanceDataMap[5] = TCGHybrid::BranchDistanceData(114, "rtb_ExtractDesiredBits_oj", '>', 4);
+    TCGHybrid::branchDistanceDataMap[6] = TCGHybrid::BranchDistanceData(166, "rtb_Subtract_a", '>', 15);
+    TCGHybrid::branchDistanceDataMap[7] = TCGHybrid::BranchDistanceData(168, "rtb_ExtractDesiredBits_oj", '>', 4);
+    TCGHybrid::branchDistanceDataMap[8] = TCGHybrid::BranchDistanceData(220, "rtb_Subtract_n", '>', 15);
+    TCGHybrid::branchDistanceDataMap[9] = TCGHybrid::BranchDistanceData(222, "rtb_ExtractDesiredBits_oj", '>', 4);
+    TCGHybrid::branchDistanceDataMap[10] = TCGHybrid::BranchDistanceData(276, "rtb_Subtract_j", '>', 15);
+    TCGHybrid::branchDistanceDataMap[11] = TCGHybrid::BranchDistanceData(278, "rtb_ExtractDesiredBits_oj", '<', 4);
+    TCGHybrid::branchDistanceDataMap[12] = TCGHybrid::BranchDistanceData(346, "rtb_Subtract_e", '>', 15);
+    TCGHybrid::branchDistanceDataMap[13] = TCGHybrid::BranchDistanceData(348, "rtb_ExtractDesiredBits_oj", '>', 4);
+    TCGHybrid::branchDistanceDataMap[14] = TCGHybrid::BranchDistanceData(350, "DynamicCompressionModel_DW->UnitDelay_DSTATE - DynamicCompressionModel_DW->UnitDelay_DSTATE_h", '>', 0);
+    TCGHybrid::branchDistanceDataMap[15] = TCGHybrid::BranchDistanceData(354, "DynamicCompressionModel_DW->UnitDelay_DSTATE_n - DynamicCompressionModel_DW->UnitDelay_DSTATE_g", '>', 0);
+    TCGHybrid::branchDistanceDataMap[16] = TCGHybrid::BranchDistanceData(358, "DynamicCompressionModel_DW->UnitDelay_DSTATE_d - DynamicCompressionModel_DW->UnitDelay_DSTATE_gj", '>', 0);
+    TCGHybrid::branchDistanceDataMap[17] = TCGHybrid::BranchDistanceData(362, "DynamicCompressionModel_DW->UnitDelay_DSTATE_a - DynamicCompressionModel_DW->UnitDelay_DSTATE_m", '>', 0);
+    TCGHybrid::branchDistanceDataMap[18] = TCGHybrid::BranchDistanceData(366, "DynamicCompressionModel_DW->UnitDelay_DSTATE_gu - DynamicCompressionModel_DW->UnitDelay_DSTATE_m2", '>', 0);
+    TCGHybrid::branchDistanceDataMap[19] = TCGHybrid::BranchDistanceData(370, "rtb_ExtractDesiredBits_oj", '>', 4);
+    TCGHybrid::branchDistanceDataMap[20] = TCGHybrid::BranchDistanceData(380, "(uint16_T)(DynamicCompressionModel_DW->Count_reg_DSTATE + 1)", '>', 4095);
+    TCGHybrid::branchDistanceDataMap[21] = TCGHybrid::BranchDistanceData(390, "DynamicCompressionModel_DW->DiscreteFIRFilter2_circBuf", '<', 0);
+    TCGHybrid::branchDistanceDataMap[22] = TCGHybrid::BranchDistanceData(398, "DynamicCompressionModel_DW->DiscreteFIRFilter1_circBuf", '<', 0);
+    TCGHybrid::branchDistanceDataMap[23] = TCGHybrid::BranchDistanceData(400, "DynamicCompressionModel_DW->DiscreteFIRFilter3_circBuf", '<', 0);
+    TCGHybrid::branchDistanceDataMap[24] = TCGHybrid::BranchDistanceData(402, "DynamicCompressionModel_DW->DiscreteFIRFilter4_circBuf", '<', 0);
+    TCGHybrid::branchDistanceDataMap[25] = TCGHybrid::BranchDistanceData(404, "DynamicCompressionModel_DW->DiscreteFIRFilter5_circBuf", '<', 0);
+    TCGHybrid::branchDistanceDataMap[26] = TCGHybrid::BranchDistanceData(406, "DynamicCompressionModel_DW->ig65fir_circBuf", '<', 0);
+    TCGHybrid::arrayDistanceDataMap[0] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_ConstP.DiscreteFIRFilter1_Coefficients", (unsigned char*)DynamicCompressionModel_ConstP.DiscreteFIRFilter1_Coefficients, 577 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[1] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_ConstP.DiscreteFIRFilter2_Coefficients", (unsigned char*)DynamicCompressionModel_ConstP.DiscreteFIRFilter2_Coefficients, 629 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[2] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_ConstP.DiscreteFIRFilter3_Coefficients", (unsigned char*)DynamicCompressionModel_ConstP.DiscreteFIRFilter3_Coefficients, 353 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[3] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_ConstP.DiscreteFIRFilter4_Coefficients", (unsigned char*)DynamicCompressionModel_ConstP.DiscreteFIRFilter4_Coefficients, 255 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[4] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_ConstP.DiscreteFIRFilter5_Coefficients", (unsigned char*)DynamicCompressionModel_ConstP.DiscreteFIRFilter5_Coefficients, 231 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[5] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_ConstP.ig65fir_Coefficients", (unsigned char*)DynamicCompressionModel_ConstP.ig65fir_Coefficients, 289 * sizeof(int64_T));
+    TCGHybrid::arrayDistanceDataMap[6] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_ConstP.pooled19", (unsigned char*)DynamicCompressionModel_ConstP.pooled19, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[7] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_ConstP.pooled20", (unsigned char*)DynamicCompressionModel_ConstP.pooled20, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[8] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_ConstP.pooled21", (unsigned char*)DynamicCompressionModel_ConstP.pooled21, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[9] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_ConstP.pooled22", (unsigned char*)DynamicCompressionModel_ConstP.pooled22, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[10] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_ConstP.pooled23", (unsigned char*)DynamicCompressionModel_ConstP.pooled23, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[11] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.Delay_DSTATE", (unsigned char*)DynamicCompressionModel_DW_instance.Delay_DSTATE, 3 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[12] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.Delay_DSTATE_d", (unsigned char*)DynamicCompressionModel_DW_instance.Delay_DSTATE_d, 3 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[13] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.Delay_DSTATE_e", (unsigned char*)DynamicCompressionModel_DW_instance.Delay_DSTATE_e, 3 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[14] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.Delay_DSTATE_n", (unsigned char*)DynamicCompressionModel_DW_instance.Delay_DSTATE_n, 3 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[15] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.Delay_DSTATE_p", (unsigned char*)DynamicCompressionModel_DW_instance.Delay_DSTATE_p, 3 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[16] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.DiscreteFIRFilter1_states", (unsigned char*)DynamicCompressionModel_DW_instance.DiscreteFIRFilter1_states, 576 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[17] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.DiscreteFIRFilter2_states", (unsigned char*)DynamicCompressionModel_DW_instance.DiscreteFIRFilter2_states, 628 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[18] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.DiscreteFIRFilter3_states", (unsigned char*)DynamicCompressionModel_DW_instance.DiscreteFIRFilter3_states, 352 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[19] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.DiscreteFIRFilter4_states", (unsigned char*)DynamicCompressionModel_DW_instance.DiscreteFIRFilter4_states, 254 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[20] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.DiscreteFIRFilter5_states", (unsigned char*)DynamicCompressionModel_DW_instance.DiscreteFIRFilter5_states, 230 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[21] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.dly_shift_1_DSTATE", (unsigned char*)DynamicCompressionModel_DW_instance.dly_shift_1_DSTATE, 26 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[22] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.dly_shift_3_DSTATE", (unsigned char*)DynamicCompressionModel_DW_instance.dly_shift_3_DSTATE, 138 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[23] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.dly_shift_4_DSTATE", (unsigned char*)DynamicCompressionModel_DW_instance.dly_shift_4_DSTATE, 187 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[24] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.dly_shift_5_DSTATE", (unsigned char*)DynamicCompressionModel_DW_instance.dly_shift_5_DSTATE, 199 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[25] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.ig65fir_states", (unsigned char*)DynamicCompressionModel_DW_instance.ig65fir_states, 288 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[26] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.ram_DSTATE", (unsigned char*)DynamicCompressionModel_DW_instance.ram_DSTATE, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[27] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.ram_DSTATE_a", (unsigned char*)DynamicCompressionModel_DW_instance.ram_DSTATE_a, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[28] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.ram_DSTATE_c", (unsigned char*)DynamicCompressionModel_DW_instance.ram_DSTATE_c, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[29] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.ram_DSTATE_c5", (unsigned char*)DynamicCompressionModel_DW_instance.ram_DSTATE_c5, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[30] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.ram_DSTATE_h", (unsigned char*)DynamicCompressionModel_DW_instance.ram_DSTATE_h, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[31] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.ram_DSTATE_hp", (unsigned char*)DynamicCompressionModel_DW_instance.ram_DSTATE_hp, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[32] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.ram_DSTATE_hz", (unsigned char*)DynamicCompressionModel_DW_instance.ram_DSTATE_hz, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[33] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.ram_DSTATE_k", (unsigned char*)DynamicCompressionModel_DW_instance.ram_DSTATE_k, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[34] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.ram_DSTATE_n", (unsigned char*)DynamicCompressionModel_DW_instance.ram_DSTATE_n, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[35] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_DW_instance.ram_DSTATE_o", (unsigned char*)DynamicCompressionModel_DW_instance.ram_DSTATE_o, 512 * sizeof(int32_T));
+    TCGHybrid::arrayDistanceDataMap[36] = TCGHybrid::ArrayDistanceData("DynamicCompressionModel_instance.Timing.TaskCounters.TID", (unsigned char*)DynamicCompressionModel_instance.Timing.TaskCounters.TID, 2 * sizeof(uint16_T));
+}

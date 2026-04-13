@@ -1,0 +1,12 @@
+inline void vfsqrt(float *inport, float *outport)
+{
+    asm(
+        "li t0, 4\n\t"
+        "vsetvli zero, t0, e32, m1\n\t"
+        "vle.v v0, (%1)\n\t"
+        "vfsqrt.v v0, v0\n\t"
+        "vse.v v0, (%0)\n\t"
+        :
+        : "r"(outport), "r"(inport)
+        : "v0", "t0");
+}

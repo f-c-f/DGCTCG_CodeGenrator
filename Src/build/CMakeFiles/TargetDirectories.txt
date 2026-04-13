@@ -1,0 +1,3 @@
+D:/Phd/CodeGenerator2/Src/build/CMakeFiles/ILTranslator.dir
+D:/Phd/CodeGenerator2/Src/build/CMakeFiles/edit_cache.dir
+D:/Phd/CodeGenerator2/Src/build/CMakeFiles/rebuild_cache.dir

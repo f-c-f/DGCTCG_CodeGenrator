@@ -1,0 +1,3 @@
+"C:\Program Files\CMake\bin\cmake.exe" -E rm -f CMakeFiles\ILTranslator.dir/objects.a
+C:\mingw64\bin\ar.exe qc CMakeFiles\ILTranslator.dir/objects.a @CMakeFiles\ILTranslator.dir\objects1.rsp
+C:\mingw64\bin\c++.exe  -Wall -Wextra -O2 -std=c++17 -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\ILTranslator.dir/objects.a -Wl,--no-whole-archive -o D:\Phd\CodeGenerator2\Src\exe\ILTranslator\ILTranslator.exe -Wl,--out-implib,libILTranslator.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\ILTranslator.dir\linkLibs.rsp

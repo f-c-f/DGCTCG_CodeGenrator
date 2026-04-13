@@ -1,0 +1,25 @@
+#ifndef _SIMUBASE_H_
+#define _SIMUBASE_H_
+
+#include <string>
+#include <map>
+
+using namespace std;
+
+
+
+class SimulatorBasic
+{
+public:
+	static int totalStep;
+public:
+	static int initArgument(int argc, char** argv);
+	//int parseArguments(int argc, char** argv);
+
+private:
+	//std::map<std::string, std::string> arguments;
+
+
+};
+
+#endif // _SIMUBASE_H_

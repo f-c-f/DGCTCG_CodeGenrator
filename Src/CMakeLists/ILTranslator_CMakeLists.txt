@@ -1,0 +1,40 @@
+cmake_minimum_required (VERSION 3.21)
+
+# 设置编译器标�?if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w -Wall -Wextra -g -O0")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w -Wall -Wextra -g -O0 -std=c++17")
+else()
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w -Wall -Wextra -O2")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w -Wall -Wextra -O2 -std=c++17")
+endif()
+
+project ("ILTranslator")
+
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ../exe/ILTranslator)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ../exe/ILTranslator)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ../exe/ILTranslator)
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ILTranslator)
+
+
+file(GLOB SOURCE_Common ../Common/*.cpp ../Common/*.h ../Common/*.hpp)
+file(GLOB SOURCE_ILBasic ../ILBasic/*.cpp ../ILBasic/*.h)
+file(GLOB SOURCE_TCGBasic ../TCGBasic/*.cpp ../TCGBasic/*.h)
+file(GLOB SOURCE_SimulatorBasic ../SimulatorBasic/*.cpp ../SimulatorBasic/*.h)
+file(GLOB SOURCE_ILTranslator ../ILTranslator/*.cpp ../ILTranslator/*.h)
+
+add_executable (ILTranslator 
+	${SOURCE_Common}
+	${SOURCE_ILBasic}
+	${SOURCE_TCGBasic}
+	${SOURCE_SimulatorBasic}
+	${SOURCE_ILTranslator}
+)
+
+source_group("Common" FILES ${SOURCE_Common})
+source_group("ILBasic" FILES ${SOURCE_ILBasic})
+source_group("TCGBasic" FILES ${SOURCE_TCGBasic})
+source_group("SimulatorBasic" FILES ${SOURCE_SimulatorBasic})
+source_group("ILTranslator" FILES ${SOURCE_ILTranslator})
+
+
